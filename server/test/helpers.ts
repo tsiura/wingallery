@@ -1,10 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
-import { mkdtemp, realpath } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { BlockList } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Role } from '../../shared/types.ts';
 import { createApp } from '../app.ts';
 import type { App } from '../app.ts';
@@ -31,6 +31,18 @@ export function hasCommand(cmd: string): boolean {
 // Absolute path of a file in server/test/fixtures.
 export function fixture(name: string): string {
   return join(import.meta.dirname, 'fixtures', name);
+}
+
+// Builds a media tree under `root`. A name ending in `/` is a folder; any other is a file holding a real photo (exif-rot6.jpg for a name
+// ending in .jpg, plain.png for the rest). `links` are [target, at] pairs, as symlink(target, at) takes them, with `at` relative to `root`.
+export async function seedTree(root: string, files: string[], links: [string, string][] = []): Promise<void> {
+  const [png, jpg] = await Promise.all([readFile(fixture('plain.png')), readFile(fixture('exif-rot6.jpg'))]);
+  for (const f of files) {
+    const abs = join(root, f);
+    await mkdir(f.endsWith('/') ? abs : dirname(abs), { recursive: true });
+    if (!f.endsWith('/')) await writeFile(abs, f.endsWith('.jpg') ? jpg : png);
+  }
+  for (const [target, at] of links) await symlink(target, join(root, at));
 }
 
 export function testConfig(over: Partial<Config> & { mediaRoot: string; dataDir: string }): Config {

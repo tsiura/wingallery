@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import { registerAdminRoutes } from './adminroutes.ts';
 import { LoginLimiter, SESSION_COOKIE, sessionCookie, touchSession } from './auth.ts';
 import { registerAuthRoutes } from './authroutes.ts';
 import type { Config } from './config.ts';
@@ -82,5 +83,6 @@ export function createApp(cfg: Config, db: DB): App {
     }),
   };
   registerAuthRoutes(app);
+  registerAdminRoutes(app);
   return app;
 }

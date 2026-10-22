@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { BlockList } from 'node:net';
 import {
-  LoginLimiter, SESSION_COOKIE, burnPasswordCheck, clearSessionCookie, createSession, hashPassword, requireAdmin,
+  DUMMY_HASH, LoginLimiter, SESSION_COOKIE, burnPasswordCheck, clearSessionCookie, createSession, hashPassword, requireAdmin,
   requireUser, revokeSession, revokeUserSessions, sessionCookie, touchSession, verifyPassword,
 } from '../auth.ts';
 import { openDb } from '../db.ts';
@@ -25,12 +25,16 @@ test('verifyPassword refuses anything but an argon2id v19 string', async () => {
   for (const bad of ['', 'plain', '$argon2i$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g', '$argon2id$v=16$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2g'])
     assert.equal(await verifyPassword('x', bad), false, bad);
 });
-test('burnPasswordCheck costs as much as a real check', async () => {
-  const h = await hashPassword('x');
-  const ms = async (f: () => Promise<unknown>) => { const t = performance.now(); await f(); return performance.now() - t; };
-  const real = Math.min(await ms(() => verifyPassword('y', h)), await ms(() => verifyPassword('y', h)));
-  // a malformed or cheaper dummy hash would answer almost at once, which tells an attacker the user does not exist
-  assert.ok(await ms(() => burnPasswordCheck('y')) > real / 2, 'unknown users must not be answered faster than wrong passwords');
+test('the dummy hash behind burnPasswordCheck is as costly as a real one', async () => {
+  // A malformed or cheaper dummy would answer almost at once and tell an attacker that the user does not exist. A stopwatch flakes under
+  // load, so the test compares what sets the cost (R4b): m, t, p and the lengths of the salt and the tag. That an unknown login runs
+  // exactly one hash is counted in authroutes.test.ts.
+  const shape = (phc: string) => {
+    const m = /^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([A-Za-z0-9+/]+)\$([A-Za-z0-9+/]+)$/.exec(phc);
+    assert.ok(m, `not an argon2id v19 string: ${phc}`);
+    return { m: +m[1], t: +m[2], p: +m[3], saltBytes: Buffer.from(m[4], 'base64').length, tagBytes: Buffer.from(m[5], 'base64').length };
+  };
+  assert.deepEqual(shape(DUMMY_HASH), shape(await hashPassword('x')));
 });
 test('createUser validation', async () => {
   const db = openDb(':memory:');

@@ -2,20 +2,13 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Prefs, SessionInfo } from '../shared/types.ts';
 import type { App } from './app.ts';
 import { burnPasswordCheck, clearSessionCookie, createSession, requireUser, revokeSession, sessionCookie, verifyPassword } from './auth.ts';
-import { HttpError, readJson, str } from './http.ts';
+import { HttpError, readObject, str } from './http.ts';
 import type { Ctx } from './http.ts';
 import { log } from './log.ts';
 import { countUsers, createUser, findLogin, getMe, setPassword, setPrefs } from './users.ts';
 
 // Credentials are short, and strangers can reach these endpoints, so a small cap keeps them from buffering megabytes.
 const BODY_LIMIT = 8 * 1024;
-
-// The body must be a JSON object. Its fields are untrusted (G6): each one is read through str() or checked before it is used.
-async function readObject(ctx: Ctx): Promise<Record<string, unknown>> {
-  const body = await readJson<unknown>(ctx, BODY_LIMIT);
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Invalid JSON');
-  return body as Record<string, unknown>;
-}
 
 // Compared as bytes: strings of equal length can differ in bytes, and timingSafeEqual throws on unequal lengths.
 function sameText(a: string, b: string): boolean {
@@ -40,7 +33,7 @@ export function registerAuthRoutes(app: App): void {
   router.add('GET', '/api/session', (ctx): SessionInfo => ({ user: ctx.user, setupRequired: countUsers(db) === 0 }));
 
   router.add('POST', '/api/login', async (ctx) => {
-    const body = await readObject(ctx);
+    const body = await readObject(ctx, BODY_LIMIT);
     const username = str(body.username), password = str(body.password);   // this very text goes to findLogin and to the limiter
     checkLimit(ctx, username);
     const found = findLogin(db, username);
@@ -71,7 +64,7 @@ export function registerAuthRoutes(app: App): void {
   });
 
   router.add('POST', '/api/setup', async (ctx) => {
-    const body = await readObject(ctx);
+    const body = await readObject(ctx, BODY_LIMIT);
     if (countUsers(db) > 0) throw new HttpError(409, 'Already set up');   // before the token, so a used link says why
     const link = app.setupToken;
     if (link === null || !sameText(str(body.token), link)) throw new HttpError(403, 'Invalid setup link');
@@ -86,7 +79,7 @@ export function registerAuthRoutes(app: App): void {
 
   router.add('POST', '/api/me/password', async (ctx) => {
     const me = requireUser(ctx);
-    const body = await readObject(ctx);
+    const body = await readObject(ctx, BODY_LIMIT);
     // Checking the current password is a password oracle for whoever holds the cookie (a stolen session, a screen left open),
     // so it counts against the same lock as the login, and a right one clears the count as a login does.
     checkLimit(ctx, me.username);
@@ -105,7 +98,7 @@ export function registerAuthRoutes(app: App): void {
 
   router.add('PUT', '/api/me/prefs', async (ctx) => {
     const me = requireUser(ctx);
-    const body = await readObject(ctx);
+    const body = await readObject(ctx, BODY_LIMIT);
     return setPrefs(db, me.id, { defaultView: body.defaultView, slideSeconds: body.slideSeconds } as Partial<Prefs>);   // setPrefs checks the types
   });
 }

@@ -96,6 +96,13 @@ export async function readJson<T>(ctx: Ctx, limit = 1_000_000): Promise<T> {
   }
 }
 
+// The body must be a JSON object. Its fields are untrusted (G6): each one is read through str() or checked before it is used.
+export async function readObject(ctx: Ctx, limit?: number): Promise<Record<string, unknown>> {
+  const body = await readJson<unknown>(ctx, limit);
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Invalid JSON');
+  return body as Record<string, unknown>;
+}
+
 export async function readForm(ctx: Ctx, limit = 1_000_000): Promise<URLSearchParams> {
   return new URLSearchParams((await readBody(ctx, limit, 'application/x-www-form-urlencoded')).toString('utf8'));
 }

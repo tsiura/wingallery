@@ -1,0 +1,131 @@
+// The administrator's side of the access model: which disk folder goes to which user, under which alias, with which rights.
+// A folder is picked with the resolver every other request goes through (F13.1); what is stored here is what that resolver reads.
+
+import { readdir, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { Me, ShareInfo } from '../shared/types.ts';
+import type { Config } from './config.ts';
+import type { DB } from './db.ts';
+import { HttpError, str } from './http.ts';
+import { isHiddenName, naturalCompare, validateAlias } from './names.ts';
+import { resolve, sharesForUser } from './vpath.ts';
+import type { ShareRow } from './vpath.ts';
+
+export interface ShareInput { relPath: string; alias: string; create: boolean; update: boolean; delete: boolean }
+export type SharePatch = Partial<Omit<ShareInput, 'relPath'>>;
+
+const PICK = 'Pick a folder inside the media folder';
+const notFound = () => new HttpError(404, 'Not found');
+const taken = (alias: string) => new HttpError(409, `This user already has a folder named "${alias}"`);
+const errcode = (err: unknown) => (err as { errcode?: number }).errcode;
+// Natural order, then plain code-unit order for names the collator can't tell apart (G7).
+const byName = (a: string, b: string) => naturalCompare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+// A right that is absent stays as it is; one that is present counts only when it is exactly true (G6).
+const flag = (v: unknown, current: boolean) => (v === undefined ? current : v === true);
+
+// The folder `rel` below MEDIA_ROOT ('' is MEDIA_ROOT itself). resolve() decides what is hidden, missing or a way out (400, 404); this
+// only insists on a folder. The disk path is loc.abs, never built from loc.rel (G8).
+async function folderAt(cfg: Config, admin: Me, rel: string): Promise<{ abs: string; rel: string }> {
+  const loc = await resolve(cfg, admin, [], '/' + rel);
+  if (loc.abs === null || !(await stat(loc.abs)).isDirectory()) throw new HttpError(400, PICK);
+  return { abs: loc.abs, rel: loc.rel };
+}
+
+// A share as the administrator sees it: where it lies on disk, and whether that is a folder at the moment (it can be unmounted or deleted).
+async function info(cfg: Config, row: ShareRow): Promise<ShareInfo> {
+  const diskPath = join(cfg.mediaRoot, row.relPath);
+  return { ...row, diskPath, available: await stat(diskPath).then((s) => s.isDirectory(), () => false) };
+}
+
+export function getShare(db: DB, id: number): ShareRow | null {
+  const owner = db.prepare('select user_id from shares where id = ?').get(id) as { user_id: number } | undefined;
+  return (owner && sharesForUser(db, owner.user_id).find((s) => s.id === id)) ?? null;
+}
+
+function checkedAlias(v: unknown): string {
+  const alias = str(v);
+  const bad = validateAlias(alias);
+  if (bad) throw new HttpError(400, bad);
+  return alias;
+}
+
+// An alias is unique per user whatever the letter case. SQLite's NOCASE folds ASCII only, so its UNIQUE index lets 'Дача' and 'дача' both
+// in; the lower-cased comparison here is what catches them (R5), and the index stays as the last word.
+function aliasTaken(db: DB, userId: number, alias: string, exceptId: number | null): boolean {
+  const lower = alias.toLowerCase();
+  return sharesForUser(db, userId).some((s) => s.id !== exceptId && s.alias.toLowerCase() === lower);
+}
+
+// The fields usually come straight from a request body, so each is checked at run time (G6): a non-string counts as '', a boolean that is not true as false.
+export async function addShare(cfg: Config, db: DB, admin: Me, userId: number, input: ShareInput): Promise<ShareInfo> {
+  const relPath = str(input.relPath);
+  if (relPath === '') throw new HttpError(400, PICK);   // MEDIA_ROOT itself can't be shared
+  const folder = await folderAt(cfg, admin, relPath);
+  const alias = checkedAlias(input.alias);
+  // Nothing is awaited from here to the insert, so no other request can take the alias or the folder in between.
+  if (aliasTaken(db, userId, alias, null)) throw taken(alias);
+  const rights = { create: input.create === true, update: input.update === true, delete: input.delete === true };
+  let id: number;
+  try {
+    id = Number(db.prepare('insert into shares (user_id, alias, rel_path, can_create, can_update, can_delete) values (?, ?, ?, ?, ?, ?)')
+      .run(userId, alias, folder.rel, Number(rights.create), Number(rights.update), Number(rights.delete)).lastInsertRowid);
+  } catch (err) {
+    // 2067 = SQLITE_CONSTRAINT_UNIQUE (the message names the columns), 787 = SQLITE_CONSTRAINT_FOREIGNKEY: there is no such user
+    if (errcode(err) === 2067) throw (err as Error).message.includes('shares.alias') ? taken(alias) : new HttpError(409, 'This folder is already shared with this user');
+    if (errcode(err) === 787) throw notFound();
+    throw err;
+  }
+  return info(cfg, { id, userId, alias, relPath: folder.rel, ...rights });
+}
+
+// Changes only the fields the patch names, and only when every named one is valid. The folder of a share never changes.
+export async function updateShare(cfg: Config, db: DB, id: number, patch: SharePatch): Promise<ShareInfo> {
+  const current = getShare(db, id);
+  if (!current) throw notFound();
+  const alias = patch.alias === undefined ? current.alias : checkedAlias(patch.alias);
+  if (aliasTaken(db, current.userId, alias, id)) throw taken(alias);
+  const next: ShareRow = { ...current, alias, create: flag(patch.create, current.create), update: flag(patch.update, current.update), delete: flag(patch.delete, current.delete) };
+  try {
+    db.prepare('update shares set alias = ?, can_create = ?, can_update = ?, can_delete = ? where id = ?')
+      .run(alias, Number(next.create), Number(next.update), Number(next.delete), id);
+  } catch (err) {
+    if (errcode(err) === 2067) throw taken(alias);   // the alias is the only unique column this statement writes
+    throw err;
+  }
+  return info(cfg, next);
+}
+
+export function removeShare(db: DB, id: number): void {
+  if (db.prepare('delete from shares where id = ?').run(id).changes === 0) throw notFound();
+}
+
+export async function listShareInfo(cfg: Config, db: DB, userId: number): Promise<ShareInfo[]> {
+  const list = await Promise.all(sharesForUser(db, userId).map((row) => info(cfg, row)));
+  return list.sort((a, b) => byName(a.alias, b.alias));
+}
+
+// A folder was renamed or moved from `oldRel` to `newRel` (both below MEDIA_ROOT): the shares of that folder and of everything under it follow.
+// Matched in JS, not with LIKE, because _ and % are ordinary characters in folder names. Returns how many shares moved.
+// ponytail: a new path that already is another share of the same user fails the UNIQUE index and moves none; drop the stale share if that ever shows.
+export function rewriteSharePaths(db: DB, oldRel: string, newRel: string): number {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const rows = db.prepare('select id, rel_path from shares').all() as { id: number; rel_path: string }[];
+    const hits = rows.filter((r) => r.rel_path === oldRel || r.rel_path.startsWith(oldRel + '/'));
+    const update = db.prepare('update shares set rel_path = ? where id = ?');
+    for (const r of hits) update.run(newRel + r.rel_path.slice(oldRel.length), r.id);
+    db.exec('COMMIT');
+    return hits.length;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+// The folders of the media folder, for the folder picker: no files, no hidden names, no symlinks (G5).
+export async function browseDisk(cfg: Config, admin: Me, rel: string): Promise<{ path: string; folders: string[] }> {
+  const folder = await folderAt(cfg, admin, str(rel));
+  const entries = await readdir(folder.abs, { withFileTypes: true });
+  const folders = entries.filter((e) => e.isDirectory() && !e.isSymbolicLink() && !isHiddenName(e.name)).map((e) => e.name).sort(byName);
+  return { path: folder.rel, folders };
+}

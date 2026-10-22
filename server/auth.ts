@@ -32,8 +32,9 @@ export async function verifyPassword(pw: string, phc: string): Promise<boolean> 
 }
 
 // A real hash (of a password nobody knows) with the parameters above. Checking an unknown user against it costs the
-// same as a wrong password, so response time doesn't reveal which usernames exist. server/test/auth.test.ts guards the cost.
-const DUMMY_HASH = '$argon2id$v=19$m=19456,t=2,p=1$TTwDncvJhaUR4e985lpkrA$DDOjw3CzF6Lkz1X42KpZxoH2OFyatilnGfaEtY9Mwco';
+// same as a wrong password, so response time doesn't reveal which usernames exist. server/test/auth.test.ts guards the cost
+// (exported for that test, which compares its parameters with those of hashPassword).
+export const DUMMY_HASH = '$argon2id$v=19$m=19456,t=2,p=1$TTwDncvJhaUR4e985lpkrA$DDOjw3CzF6Lkz1X42KpZxoH2OFyatilnGfaEtY9Mwco';
 
 export async function burnPasswordCheck(pw: string): Promise<void> {
   await verifyPassword(pw, DUMMY_HASH);
