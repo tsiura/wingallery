@@ -26,6 +26,12 @@ test('sanitizeUploadName', () => {
   const long = sanitizeUploadName('я'.repeat(150) + '.jpg');
   assert.ok(Buffer.byteLength(long) <= 200 && long.endsWith('.jpg'));
 });
+test('sanitizeUploadName stays linear on long runs of spaces and dots', () => {
+  const t = performance.now();
+  assert.equal(sanitizeUploadName('a' + ' '.repeat(100_000) + 'b.jpg'), 'a' + ' '.repeat(195) + '.jpg');
+  assert.equal(sanitizeUploadName('a' + '.'.repeat(100_000) + 'b.jpg'), 'a' + '.'.repeat(195) + '.jpg');
+  assert.ok(performance.now() - t < 500);
+});
 test('name helpers', () => {
   assert.deepEqual(splitExt('a.b.JPG'), ['a.b', '.JPG']); assert.deepEqual(splitExt('noext'), ['noext', '']);
   assert.equal(nextFreeName('IMG.jpg', 1), 'IMG (1).jpg'); assert.equal(nextFreeName('folder', 2), 'folder (2)');

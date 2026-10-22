@@ -54,9 +54,17 @@ function fitBytes(s: string, max: number): string {
   return out;
 }
 
+// Hand-rolled, not a regex: /^[ .]+|[ .]+$/g is quadratic on long runs of spaces or dots.
+function trimPad(s: string): string {
+  let a = 0, z = s.length;
+  while (a < z && (s[a] === ' ' || s[a] === '.')) a++;
+  while (z > a && (s[z - 1] === ' ' || s[z - 1] === '.')) z--;
+  return s.slice(a, z);
+}
+
 export function sanitizeUploadName(name: string): string {
   // Leading and trailing spaces and dots go, since validateName rejects them.
-  const clean = name.replace(new RegExp(BAD_CHARS, 'g'), '_').replace(/^[ .]+|[ .]+$/g, '');
+  const clean = trimPad(name.replace(new RegExp(BAD_CHARS, 'g'), '_'));
   const [base, ext] = splitExt(clean);
   const head = fitBytes(base, 200 - Buffer.byteLength(ext));
   // No room left for the base beside the extension, so cut the whole name instead.
