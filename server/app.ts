@@ -1,13 +1,17 @@
+import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { LoginLimiter, SESSION_COOKIE, sessionCookie, touchSession } from './auth.ts';
+import { registerAuthRoutes } from './authroutes.ts';
 import type { Config } from './config.ts';
 import type { DB } from './db.ts';
 import { HttpError, Router, clientInfo, parseCookies, securityHeaders, sendJson } from './http.ts';
 import type { Ctx } from './http.ts';
 import { log } from './log.ts';
+import { countUsers } from './users.ts';
 
-export interface App { cfg: Config; db: DB; router: Router; limiter: LoginLimiter; server: Server; close(): Promise<void> }
+// setupToken is the first-run link: set when the database has no users, cleared once the administrator exists.
+export interface App { cfg: Config; db: DB; router: Router; limiter: LoginLimiter; server: Server; setupToken: string | null; close(): Promise<void> }
 
 function fail(res: ServerResponse, err: unknown): void {
   const known = err instanceof HttpError;
@@ -69,11 +73,14 @@ export function createApp(cfg: Config, db: DB): App {
 
   const server = createServer((req, res) => { void handle(req, res); });
   let closing: Promise<void> | undefined;
-  return {
+  const app: App = {
     cfg, db, router, limiter, server,
+    setupToken: countUsers(db) === 0 ? randomBytes(24).toString('base64url') : null,
     close: () => closing ??= new Promise<void>((resolve) => {
       // stops accepting and drops idle keep-alive sockets; requests in flight finish first
       server.close(() => { db.close(); resolve(); });
     }),
   };
+  registerAuthRoutes(app);
+  return app;
 }

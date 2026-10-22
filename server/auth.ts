@@ -2,14 +2,11 @@ import { argon2, createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { Me } from '../shared/types.ts';
 import type { DB } from './db.ts';
-import { HttpError } from './http.ts';
+import { HttpError, str } from './http.ts';
 import type { Ctx } from './http.ts';
 import { getMe } from './users.ts';   // users.ts imports hashPassword back; each only calls the other inside functions, so the cycle is safe
 
 export const SESSION_COOKIE = 'hg_session';
-
-// Request bodies are JSON, so a field typed string can be anything (G6): whatever is not a string counts as ''.
-export const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 
@@ -95,31 +92,35 @@ export function clearSessionCookie(secure: boolean): string {
 
 const WINDOW = 15 * MINUTE;   // both the username lock and the IP window
 const USER_FAILS = 5, IP_FAILS = 20;
+const IDLE = DAY;             // a name's count has to outlive its lock, so it is only dropped after a day without a failed attempt
 // Account names are at most 32 characters, so a longer one can't match an account; cutting it keeps a huge made-up name from becoming a huge key.
 const key = (username: string) => str(username).slice(0, 64).toLowerCase();
 const blocked = (ms: number): { ok: false; retryAfterMin: number } => ({ ok: false, retryAfterMin: Math.ceil(ms / MINUTE) });
 
 // ponytail: keyed per address, so one IPv6 /64 can rotate through its addresses; key on the /64 if that ever shows up in the audit log.
+// ponytail: a name is remembered for a day, so a flood of made-up names from many addresses holds memory that long (about 100 bytes each); cap the map if it ever matters.
 export class LoginLimiter {
-  private users = new Map<string, { fails: number; last: number }>();   // consecutive failures per username, until success or a quiet window
+  private users = new Map<string, { fails: number; last: number }>();   // failures per username, until a success or a day without any
   private ips = new Map<string, number[]>();                            // the newest failure times per IP
   private swept = 0;
 
-  // Blocked: a username after 5 failures, for 15 minutes from the last one; an IP with 20 failures inside the last 15 minutes.
+  // Blocked: a username with 5 or more failures, for 15 minutes from the latest one (the count survives the lock, so every
+  // later failure locks again); an IP with 20 failures inside the last 15 minutes. When both apply the answer is the longer wait.
   // Checking before a slow password check is not enough: a burst of parallel attempts all pass it before the first failure
   // lands. A handler must call check() again after the await and refuse, even a right password, if it now blocks.
   check(ip: string, username: string, now = Date.now()): { ok: true } | { ok: false; retryAfterMin: number } {
-    const u = this.users.get(key(username));
-    if (u && u.fails >= USER_FAILS && now - u.last < WINDOW) return blocked(u.last + WINDOW - now);
-    const recent = this.recent(ip, now);
-    if (recent.length >= IP_FAILS) return blocked(recent[recent.length - IP_FAILS] + WINDOW - now);
-    return { ok: true };
+    const u = this.users.get(key(username)), recent = this.recent(ip, now);
+    const wait = Math.max(
+      u && u.fails >= USER_FAILS ? u.last + WINDOW - now : 0,
+      recent.length >= IP_FAILS ? recent[recent.length - IP_FAILS] + WINDOW - now : 0,
+    );
+    return wait > 0 ? blocked(wait) : { ok: true };
   }
 
   fail(ip: string, username: string, now = Date.now()): void {
     this.sweep(now);
-    const k = key(username), u = this.users.get(k);
-    this.users.set(k, { fails: u && now - u.last < WINDOW ? u.fails + 1 : 1, last: now });
+    const k = key(username);
+    this.users.set(k, { fails: (this.users.get(k)?.fails ?? 0) + 1, last: now });
     this.ips.set(ip, [...this.recent(ip, now), now].slice(-IP_FAILS));
   }
 
@@ -136,7 +137,7 @@ export class LoginLimiter {
   private sweep(now: number): void {
     if (now - this.swept < MINUTE) return;
     this.swept = now;
-    for (const [k, u] of this.users) if (now - u.last >= WINDOW) this.users.delete(k);
+    for (const [k, u] of this.users) if (now - u.last >= IDLE) this.users.delete(k);
     for (const [k, ts] of this.ips) if (now - ts[ts.length - 1] >= WINDOW) this.ips.delete(k);
   }
 }

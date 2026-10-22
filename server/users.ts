@@ -1,17 +1,29 @@
-import type { Me, Prefs, Role } from '../shared/types.ts';
-import { hashPassword, str } from './auth.ts';   // auth.ts imports getMe back; each only calls the other inside functions, so the cycle is safe
+import type { Me, Prefs, Role, ViewMode } from '../shared/types.ts';
+import { hashPassword, revokeUserSessions } from './auth.ts';   // auth.ts imports getMe back; each only calls the other inside functions, so the cycle is safe
 import type { DB } from './db.ts';
-import { HttpError } from './http.ts';
+import { HttpError, str } from './http.ts';
+
+const isView = (v: unknown): v is ViewMode => v === 'large' || v === 'medium' || v === 'details';
+const isSeconds = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 2 && v <= 20;
 
 // Stored prefs are read leniently: anything missing or out of range falls back to its default.
 export function parsePrefs(json: string): Prefs {
   let p: Partial<Prefs> | null = null;
   try { p = JSON.parse(json); } catch { /* unreadable prefs mean defaults */ }
   const view = p?.defaultView, secs = p?.slideSeconds;
-  return {
-    defaultView: view === 'large' || view === 'medium' || view === 'details' ? view : 'large',
-    slideSeconds: typeof secs === 'number' && Number.isInteger(secs) && secs >= 2 && secs <= 20 ? secs : 5,
-  };
+  return { defaultView: isView(view) ? view : 'large', slideSeconds: isSeconds(secs) ? secs : 5 };
+}
+
+// Changes only the fields the patch names, and only when every named one is valid (a patch is all or nothing). The patch usually
+// comes straight from a request body, so each value is checked at run time (G6); null is a value, not "absent".
+export function setPrefs(db: DB, id: number, patch: Partial<Prefs>): Prefs {
+  const { defaultView, slideSeconds } = patch;
+  if ((defaultView !== undefined && !isView(defaultView)) || (slideSeconds !== undefined && !isSeconds(slideSeconds))) throw new HttpError(400, 'Invalid preferences');
+  const current = getMe(db, id)?.prefs;
+  if (!current) throw new HttpError(404, 'Not found');
+  const prefs: Prefs = { defaultView: defaultView ?? current.defaultView, slideSeconds: slideSeconds ?? current.slideSeconds };
+  db.prepare('update users set prefs = ? where id = ?').run(JSON.stringify(prefs), id);
+  return prefs;
 }
 
 export function countUsers(db: DB): number {
@@ -31,15 +43,27 @@ export function findLogin(db: DB, username: string): { id: number; passwordHash:
   return r ? { id: r.id, passwordHash: r.password_hash } : null;
 }
 
+// The one password rule (eight characters, not eight UTF-16 units), checked before the slow hash. Anything but a string counts as ''.
+function checkedPassword(v: unknown): string {
+  const password = str(v);
+  if ([...password].length < 8) throw new HttpError(400, 'Password must be at least 8 characters');
+  return password;
+}
+
+// Stores the new hash and ends the user's sessions, except `keepToken` (the one a user changes their own password from).
+export async function setPassword(db: DB, id: number, password: string, keepToken: string | null = null): Promise<void> {
+  const hash = await hashPassword(checkedPassword(password));
+  if (db.prepare('update users set password_hash = ? where id = ?').run(hash, id).changes === 0) throw new HttpError(404, 'Not found');
+  revokeUserSessions(db, id, keepToken);
+}
+
 // The fields usually come straight from a request body, so each is checked at run time (G6). A role that isn't exactly 'admin' is 'member'.
 export async function createUser(db: DB, input: { username: string; displayName: string; password: string; role: Role }): Promise<Me> {
   const username = str(input.username).trim().toLowerCase();
   if (!/^[a-z0-9._-]{2,32}$/.test(username)) throw new HttpError(400, 'Username must be 2–32 characters: lowercase letters, digits, dot, dash or underscore');
   const displayName = str(input.displayName).trim() || username;
   if ([...displayName].length > 64) throw new HttpError(400, 'Display name is too long');
-  const password = str(input.password);
-  if ([...password].length < 8) throw new HttpError(400, 'Password must be at least 8 characters');
-  const hash = await hashPassword(password);
+  const hash = await hashPassword(checkedPassword(input.password));
   try {
     const { lastInsertRowid } = db.prepare('insert into users (username, display_name, role, password_hash, prefs, created_at) values (?, ?, ?, ?, ?, ?)')
       .run(username, displayName, input.role === 'admin' ? 'admin' : 'member', hash, '{}', Date.now());

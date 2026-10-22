@@ -100,6 +100,9 @@ export async function readForm(ctx: Ctx, limit = 1_000_000): Promise<URLSearchPa
   return new URLSearchParams((await readBody(ctx, limit, 'application/x-www-form-urlencoded')).toString('utf8'));
 }
 
+// Request bodies are JSON, so a field typed string can be anything (G6): whatever is not a string counts as ''.
+export const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+
 const CSP = "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
   + "script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 

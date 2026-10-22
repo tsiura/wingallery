@@ -189,23 +189,34 @@ test('login limiter', () => {
   for (let i = 0; i < 4; i++) l.fail('3.3.3.3', 'carol', t);
   assert.equal(l.check('3.3.3.3', 'carol', t).ok, true);
 });
-test('login limiter: usernames are case-insensitive and the lock runs 15 minutes from the fifth failure', () => {
+test('login limiter: usernames are case-insensitive and the lock runs 15 minutes from the latest failure', () => {
   const l = new LoginLimiter(), t = 1e12;
   for (let i = 0; i < 5; i++) l.fail('1.1.1.1', i % 2 ? 'Bob' : 'bob', t + i * M);
   assert.deepEqual(l.check('2.2.2.2', 'BOB', t + 5 * M), { ok: false, retryAfterMin: 14 });
   assert.deepEqual(l.check('2.2.2.2', 'bob', t + 19 * M - 1), { ok: false, retryAfterMin: 1 });
   assert.deepEqual(l.check('2.2.2.2', 'bob', t + 19 * M), { ok: true });
   assert.deepEqual(l.check('2.2.2.2', 'alice', t + 5 * M), { ok: true });          // only that username is locked
-  l.fail('1.1.1.1', 'bob', t + 19 * M);                                              // a lock that ran out starts counting from zero
-  assert.equal(l.check('2.2.2.2', 'bob', t + 19 * M).ok, true);
+  l.fail('1.1.1.1', 'bob', t + 19 * M);                                              // the count outlived the lock (R3a): this sixth failure locks again at once
+  assert.deepEqual(l.check('2.2.2.2', 'bob', t + 19 * M), { ok: false, retryAfterMin: 15 });
+  l.fail('1.1.1.1', 'bob', t + 20 * M);                                              // and every failure after it restarts the 15 minutes
+  assert.deepEqual(l.check('2.2.2.2', 'bob', t + 20 * M), { ok: false, retryAfterMin: 15 });
   const long = 'x'.repeat(100_000);                                                  // a huge name is still one lockable key
   for (let i = 0; i < 5; i++) l.fail('5.5.5.5', long, t);
   assert.equal(l.check('6.6.6.6', long.toUpperCase(), t).ok, false);
 });
-test('login limiter: failures far apart do not add up, success clears only the username', () => {
+test('login limiter: failures add up until a success however far apart, and success clears only the username', () => {
   const l = new LoginLimiter(), t = 1e12;
-  for (let i = 0; i < 5; i++) l.fail('3.3.3.3', 'dan', t + i * 16 * M);              // each one older than the window by the next
-  assert.deepEqual(l.check('3.3.3.3', 'dan', t + 4 * 16 * M), { ok: true });
+  for (let i = 0; i < 4; i++) l.fail('3.3.3.3', 'dan', t + i * 16 * M);              // 16 minutes apart: no lock is ever running when the next one comes
+  assert.deepEqual(l.check('3.3.3.3', 'dan', t + 3 * 16 * M), { ok: true });          // four so far
+  l.fail('3.3.3.3', 'dan', t + 4 * 16 * M);
+  assert.deepEqual(l.check('4.4.4.4', 'dan', t + 4 * 16 * M), { ok: false, retryAfterMin: 15 });
+  assert.deepEqual(l.check('4.4.4.4', 'dan', t + 5 * 16 * M), { ok: true });          // the lock runs out ...
+  l.fail('3.3.3.3', 'dan', t + 5 * 16 * M);                                           // ... but one more wrong guess locks it again
+  assert.equal(l.check('4.4.4.4', 'dan', t + 5 * 16 * M).ok, false);
+  l.succeed('dan');
+  assert.equal(l.check('4.4.4.4', 'dan', t + 5 * 16 * M).ok, true);
+  for (let i = 0; i < 4; i++) l.fail('3.3.3.3', 'dan', t + 6 * 16 * M);
+  assert.equal(l.check('4.4.4.4', 'dan', t + 6 * 16 * M).ok, true);                   // after a success the count starts from zero
   for (let i = 0; i < 20; i++) l.fail('9.9.9.9', 'u' + i, t + i * 1000);
   assert.deepEqual(l.check('9.9.9.9', 'x', t + 30_000), { ok: false, retryAfterMin: 15 });
   l.succeed('u1');                                                                   // logging in as someone else must not free the address
@@ -214,14 +225,28 @@ test('login limiter: failures far apart do not add up, success clears only the u
   assert.deepEqual(l.check('9.9.9.9', 'x', t + 15 * M), { ok: true });                // the oldest failure left the window
   assert.deepEqual(l.check('8.8.8.8', 'x', t + 30_000), { ok: true });
 });
+test('login limiter: the answer is the longer of the username wait and the address wait', () => {
+  const l = new LoginLimiter(), t = 1e12;
+  for (let i = 0; i < 5; i++) l.fail('1.1.1.1', 'bob', t - 14 * M);                   // bob: locked for 1 more minute
+  for (let i = 0; i < 20; i++) l.fail('8.8.8.8', 'v' + i, t - 10 * M);                // 8.8.8.8: blocked for 5 more
+  for (let i = 0; i < 5; i++) l.fail('3.3.3.3', 'amy', t);                            // amy: locked for 15 more
+  for (let i = 0; i < 20; i++) l.fail('9.9.9.9', 'u' + i, t);                         // 9.9.9.9: blocked for 15 more
+  assert.deepEqual(l.check('2.2.2.2', 'bob', t), { ok: false, retryAfterMin: 1 });    // one limit alone
+  assert.deepEqual(l.check('8.8.8.8', 'nobody', t), { ok: false, retryAfterMin: 5 });
+  assert.deepEqual(l.check('9.9.9.9', 'bob', t), { ok: false, retryAfterMin: 15 });   // both apply: the address wait is the longer
+  assert.deepEqual(l.check('8.8.8.8', 'amy', t), { ok: false, retryAfterMin: 15 });   // both apply: the username wait is the longer
+});
 test('login limiter forgets idle entries, so made-up names and addresses cannot grow it forever', () => {
   const l = new LoginLimiter(), t = 1e12;
   for (let i = 0; i < 1000; i++) l.fail('7.7.' + (i >> 8) + '.' + (i & 255), 'name' + i, t);
   assert.deepEqual([(l as any).users.size, (l as any).ips.size], [1000, 1000]);
-  l.fail('8.8.8.8', 'late', t + 16 * M);
-  assert.deepEqual([(l as any).users.size, (l as any).ips.size], [1, 1]);
-  l.fail('8.8.8.8', 'x'.repeat(100_000), t + 16 * M);
-  assert.ok([...(l as any).users.keys()].every((k: string) => k.length <= 64));   // a huge name does not become a huge key
+  l.fail('8.8.8.8', 'late', t + 16 * M);                                              // an address is forgotten after its 15 minute window ...
+  assert.deepEqual([(l as any).users.size, (l as any).ips.size], [1001, 1]);          // ... a name's count has to outlive its lock (R3a)
+  l.fail('8.8.8.8', 'x'.repeat(100_000), t + D - M);
+  assert.equal((l as any).users.size, 1002);                                          // still a minute short of a day idle
+  l.fail('8.8.8.8', 'last', t + D);
+  assert.equal((l as any).users.size, 3);                                             // 'late', the long one and 'last' stay; the first 1000 were idle for a day
+  assert.ok([...(l as any).users.keys()].every((k: string) => k.length <= 64));       // a huge name does not become a huge key
 });
 test('Origin check, trusted proxy and HSTS (Review Focus 4)', async (t) => {
   const trusted = new BlockList(); trusted.addAddress('127.0.0.1'); trusted.addAddress('::1', 'ipv6');
@@ -234,6 +259,16 @@ test('Origin check, trusted proxy and HSTS (Review Focus 4)', async (t) => {
     if (status === 200) assert.equal(r.headers.get('strict-transport-security'), 'max-age=31536000');
     else assert.match((await r.json()).error, /check TRUSTED_PROXIES/);
   }
+});
+test('Origin check: behind a trusted proxy a foreign Origin is still refused, with the TRUSTED_PROXIES hint', async (t) => {
+  const trusted = new BlockList(); trusted.addAddress('127.0.0.1'); trusted.addAddress('::1', 'ipv6');
+  const ta = await startTestApp({ trustedProxies: trusted }); t.after(() => ta.close());
+  ta.app.router.add('POST', '/api/ping', () => ({ pong: true }));
+  const headers = { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'gallery.example.com', 'content-type': 'application/json' };
+  const post = (origin: string) => fetch(ta.url + '/api/ping', { method: 'POST', headers: { ...headers, origin }, body: '{}' });
+  const foreign = await post('https://evil.example');
+  assert.deepEqual([foreign.status, await foreign.json()], [403, { error: HINT }]);
+  assert.equal((await post('https://gallery.example.com')).status, 200);             // the proxy's own site is the one that passes
 });
 test('Origin check: only the exact site origin may change state, reads are not checked', async (t) => {
   const ta = await startTestApp({ trustedProxies: new BlockList() }); t.after(() => ta.close());

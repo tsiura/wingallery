@@ -5,11 +5,13 @@ import { BlockList } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Role } from '../../shared/types.ts';
 import { createApp } from '../app.ts';
 import type { App } from '../app.ts';
 import type { Config } from '../config.ts';
 import { openDb } from '../db.ts';
 import type { DB } from '../db.ts';
+import { createUser } from '../users.ts';
 
 const dirs: string[] = [];
 process.on('exit', () => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -51,6 +53,9 @@ export interface Client {
 export interface TestApp {
   url: string; app: App; cfg: Config; db: DB; media: string;
   client(cookie?: string | null): Client;
+  addUser(username: string, role: Role, password?: string): Promise<{ id: number; client: Client }>;   // created directly, then signed in through the API
+  login(username: string, password: string): Promise<Client>;                                          // a new session each time; throws when refused
+  admin(): Promise<Client>;                                                                            // the administrator `root`, made on first use
   close(): Promise<void>;
 }
 
@@ -89,9 +94,29 @@ export async function startTestApp(over: Partial<Config> = {}): Promise<TestApp>
   const app = createApp(cfg, db);
   await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+  // Signing in is set-up here, so the server's `login` audit line is kept out of the test output (a test that wants audit lines mocks console.log itself).
+  // ponytail: this swaps the global console.log for the length of one request; give log() a sink of its own if a test ever needs these lines.
+  async function login(username: string, password: string): Promise<Client> {
+    const print = console.log;
+    console.log = () => {};
+    try {
+      const r = await makeClient(url, null).req('POST', '/api/login', { username, password, remember: true });
+      if (r.status !== 200) throw new Error(`login as ${username} was refused: ${r.status} ${await r.text()}`);
+      return makeClient(url, r.headers.getSetCookie()[0].split(';')[0]);
+    } finally {
+      console.log = print;
+    }
+  }
+  async function addUser(username: string, role: Role, password = 'password123') {
+    const me = await createUser(db, { username, displayName: username, password, role });
+    return { id: me.id, client: await login(me.username, password) };
+  }
+  let admin: Promise<Client> | undefined;
   return {
     url, app, cfg, db, media: cfg.mediaRoot,
     client: (cookie = null) => makeClient(url, cookie),
+    addUser, login,
+    admin: () => admin ??= addUser('root', 'admin').then((u) => u.client),
     async close() {
       app.server.closeAllConnections();   // a test that left a response unread must not hang the run
       await app.close();
