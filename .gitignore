@@ -3,3 +3,4 @@ dist/
 data/
 .superpowers/
 node-compile-cache/
+dev-data/
