@@ -1,0 +1,143 @@
+<h2>Access model: shared folders with aliases</h2>
+<p class="subtitle">1) Papa after login &nbsp;·&nbsp; 2) Papa inside a folder where he may upload &nbsp;·&nbsp; 3) You (admin) giving Papa folders &nbsp;·&nbsp; 4) Picking a folder from NAS disk. Reply in terminal.</p>
+
+<style>
+.w{font-family:'Segoe UI Variable Text','Segoe UI',system-ui,sans-serif;font-size:13px;color:#1b1b1f;background:#eef1f5;border-radius:8px;overflow:hidden;border:1px solid #d5dae2;margin-bottom:6px}
+.w .tb{height:36px;display:flex;align-items:center;gap:8px;padding:0 12px}
+.w .logo{width:16px;height:16px;border-radius:4px;background:#005fb8}
+.w .av{width:24px;height:24px;border-radius:50%;color:#fff;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.w .cb{display:flex;align-items:center;gap:8px;padding:2px 12px 8px}
+.w .nav{color:#8a8f99;font-size:15px;width:22px;text-align:center}
+.w .crumb{flex:1;height:30px;background:#fff;border:1px solid #dde1e7;border-radius:4px;display:flex;align-items:center;gap:6px;padding:0 10px;color:#3a3e46}
+.w .search{width:200px;height:30px;background:#fff;border:1px solid #dde1e7;border-radius:4px;display:flex;align-items:center;padding:0 10px;color:#8a8f99}
+.w .body{display:flex}
+.w .side{width:190px;padding:6px 4px;flex-shrink:0}
+.w .node{height:28px;display:flex;align-items:center;gap:6px;border-radius:4px;padding-right:8px}
+.w .node.on{background:#dde6f2;font-weight:600;box-shadow:inset 3px 0 0 #005fb8}
+.w .node .n{margin-left:auto;color:#8a8f99;font-weight:400;font-size:12px}
+.w .fold{width:16px;height:12px;background:#f2c94c;border-radius:2px;flex-shrink:0}
+.w .pane{flex:1;background:#fff;border-top-left-radius:8px;border-left:1px solid #e1e5eb;border-top:1px solid #e1e5eb;display:flex;flex-direction:column;min-width:0}
+.w .bar{height:44px;display:flex;align-items:center;gap:4px;padding:0 10px;border-bottom:1px solid #eceff3}
+.w .btn{height:28px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.w .btn.pri{background:#005fb8;color:#fff;font-weight:600}
+.w .btn.off{color:#b4b9c2;text-decoration:line-through}
+.w .sep{width:1px;height:20px;background:#e1e5eb;margin:0 4px}
+.w .views{margin-left:auto;display:flex;background:#f3f4f6;border-radius:4px;padding:2px}
+.w .views span{padding:3px 8px;border-radius:3px}
+.w .views span.on{background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.w .grid{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.w .tile{padding:8px;border-radius:6px;text-align:center}
+.w .cover{height:96px;border-radius:5px;background:#f5c84c;position:relative;overflow:hidden}
+.w .cover img{position:absolute;left:10px;right:10px;top:14px;bottom:-6px;width:calc(100% - 20px);height:96px;object-fit:cover;border-radius:3px;background:#d9dde3}
+.w .photo{height:96px;border-radius:4px;background:#d9dde3 center/cover}
+.w .lbl{margin-top:6px}
+.w .sub{color:#8a8f99;font-size:12px}
+.w .status{height:26px;display:flex;align-items:center;padding:0 12px;color:#5c616b;font-size:12px;border-top:1px solid #eceff3}
+.w .badge{padding:2px 8px;border-radius:10px;background:#e5eef8;color:#005fb8;font-size:12px;font-weight:600}
+.w table{border-collapse:collapse;width:100%}
+.w th{text-align:left;font-weight:600;color:#5c616b;font-size:12px;padding:6px 8px;border-bottom:1px solid #e1e5eb}
+.w td{padding:8px;border-bottom:1px solid #f0f2f5;vertical-align:middle}
+.w .chk{display:inline-block;width:16px;height:16px;border-radius:3px;border:1.5px solid #8a8f99;vertical-align:middle}
+.w .chk.on{background:#005fb8;border-color:#005fb8;position:relative}
+.w .chk.on:after{content:'✓';color:#fff;font-size:11px;position:absolute;left:2px;top:-2px}
+.w .chk.lock{background:#9fb8d3;border-color:#9fb8d3}
+.w .mono{font-family:Consolas,'Cascadia Mono',monospace;font-size:12px;color:#3a3e46}
+.w .field{height:30px;border:1px solid #dde1e7;border-bottom:2px solid #005fb8;border-radius:4px;display:flex;align-items:center;padding:0 10px;background:#fff}
+.w .seg{display:inline-flex;background:#f3f4f6;border-radius:4px;padding:2px}
+.w .seg span{padding:3px 10px;border-radius:3px}
+.w .seg span.on{background:#fff;color:#005fb8;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.cap{font-size:13px;margin:18px 0 6px;font-weight:600}
+</style>
+
+<!-- 1 -->
+<div class="cap">1 · Papa logs in — root shows only folders shared with him, by alias. Real disk paths never visible.</div>
+<div class="w">
+  <div class="tb"><div class="logo"></div><b>Home Gallery</b><span class="sub">gallery.local</span><span style="margin-left:auto">Papa</span><div class="av" style="background:#8a5a00">PA</div></div>
+  <div class="cb"><span class="nav">←</span><span class="nav">→</span><span class="nav">↑</span><div class="crumb"><span class="fold"></span>Home Gallery</div><div class="search">Search Home Gallery</div></div>
+  <div class="body" style="height:250px">
+    <div class="side">
+      <div class="node on" style="padding-left:6px">▾ <span class="fold"></span>Home Gallery<span class="n">252</span></div>
+      <div class="node" style="padding-left:22px">› <span class="fold"></span>test1-papa<span class="n">12</span></div>
+      <div class="node" style="padding-left:22px">› <span class="fold"></span>Family photos<span class="n">240</span></div>
+    </div>
+    <div class="pane">
+      <div class="bar"><span class="btn pri">▶ Slideshow</span><span class="btn">Sort: Name ↑</span><span class="btn">Select all</span>
+        <div class="views"><span class="on">Large icons</span><span>Medium icons</span><span>Details</span></div></div>
+      <div class="grid">
+        <div class="tile"><div class="cover"><img src="https://picsum.photos/seed/ice1/320/240" alt=""></div><div class="lbl">test1-papa</div><div class="sub">12 items</div></div>
+        <div class="tile"><div class="cover"><img src="https://picsum.photos/seed/fam2/320/240" alt=""></div><div class="lbl">Family photos</div><div class="sub">240 items</div></div>
+      </div>
+      <div class="status" style="margin-top:auto">2 items</div>
+    </div>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="cap">2 · Papa inside “Family photos” (rights: Create + Read) — toolbar shows only what he may do.</div>
+<div class="w">
+  <div class="cb" style="padding-top:8px"><span class="nav">←</span><span class="nav">→</span><span class="nav">↑</span><div class="crumb"><span class="fold"></span>Home Gallery › Family photos › Christmas 2025</div><div class="search">Search Christmas 2025</div></div>
+  <div class="pane" style="border-radius:0;border-left:0">
+    <div class="bar"><span class="btn pri">▶ Slideshow</span><span class="btn">⬆ Upload</span><span class="btn">＋ New folder</span><span class="sep"></span><span class="btn off">Rename</span><span class="btn off">Delete</span><span class="sep"></span><span class="badge">Can view + add</span>
+      <div class="views"><span>Large icons</span><span class="on">Medium icons</span><span>Details</span></div></div>
+    <div class="grid" style="grid-template-columns:repeat(6,1fr)">
+      <div class="photo" style="background-image:url(https://picsum.photos/seed/fam10/240/180)"></div>
+      <div class="photo" style="background-image:url(https://picsum.photos/seed/fam11/240/180)"></div>
+      <div class="photo" style="background-image:url(https://picsum.photos/seed/fam12/240/180)"></div>
+      <div class="photo" style="background-image:url(https://picsum.photos/seed/fam13/240/180)"></div>
+      <div class="photo" style="background-image:url(https://picsum.photos/seed/fam14/240/180)"></div>
+      <div class="photo" style="background-image:url(https://picsum.photos/seed/fam15/240/180)"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="cap">3 · You (admin): Settings › Users &amp; access › Papa — list of shared folders, alias + CRUD per folder (applies to all subfolders).</div>
+<div class="w" style="background:#f7f8fa">
+  <div class="body">
+    <div class="side" style="width:200px;border-right:1px solid #e1e5eb;padding:10px 6px">
+      <div class="sub" style="padding:0 6px 6px">4 users · <a>＋ Add user</a></div>
+      <div class="node" style="padding-left:6px;height:40px"><div class="av" style="background:#005fb8">EV</div><div>Evgeniy<div class="sub">Administrator · You</div></div></div>
+      <div class="node on" style="padding-left:6px;height:40px"><div class="av" style="background:#8a5a00">PA</div><div>Papa<div class="sub" style="font-weight:400">Member</div></div></div>
+      <div class="node" style="padding-left:6px;height:40px"><div class="av" style="background:#2f7d32">MA</div><div>Mama<div class="sub">Member</div></div></div>
+      <div class="node" style="padding-left:6px;height:40px"><div class="av" style="background:#a4373a">AN</div><div>Anna<div class="sub">Member</div></div></div>
+    </div>
+    <div style="flex:1;padding:14px 18px;background:#fff;min-width:0">
+      <div style="display:flex;gap:16px;margin-bottom:14px">
+        <div style="flex:1"><div class="sub">Display name</div><div class="field">Papa</div></div>
+        <div style="flex:1"><div class="sub">Username</div><div class="field">papa</div></div>
+        <div><div class="sub">Password</div><div class="btn" style="border:1px solid #dde1e7">Set new password</div></div>
+        <div><div class="sub">Role</div><div class="seg"><span>Administrator</span><span class="on">Member</span></div></div>
+      </div>
+      <div style="display:flex;align-items:center;margin-bottom:4px"><b>Shared folders</b><span class="sub" style="margin-left:8px">Appear in Papa's root under alias. Rights cover all subfolders.</span><span class="btn pri" style="margin-left:auto">＋ Add folder</span></div>
+      <table>
+        <tr><th>Alias (what Papa sees)</th><th>Folder on disk</th><th>Create</th><th>Read</th><th>Update</th><th>Delete</th><th></th></tr>
+        <tr><td>test1-papa</td><td class="mono">/home/user/pictures/test1</td><td><span class="chk"></span></td><td><span class="chk on lock"></span></td><td><span class="chk"></span></td><td><span class="chk"></span></td><td class="sub">Remove</td></tr>
+        <tr><td>Family photos</td><td class="mono">/home/user/pictures/family</td><td><span class="chk on"></span></td><td><span class="chk on lock"></span></td><td><span class="chk"></span></td><td><span class="chk"></span></td><td class="sub">Remove</td></tr>
+      </table>
+      <div class="sub" style="margin-top:8px">Create = upload + new folder · Read = browse, view, slideshow, download (always on) · Update = rename, move · Delete = delete</div>
+    </div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="cap">4 · “Add folder” dialog — browse NAS disk, name alias, tick rights.</div>
+<div class="w" style="max-width:620px;background:#fff">
+  <div style="padding:14px 18px;border-bottom:1px solid #eceff3"><b style="font-size:15px">Share folder with Papa</b></div>
+  <div style="padding:12px 18px">
+    <div class="crumb" style="margin-bottom:6px"><span class="mono">/home/user/pictures</span></div>
+    <div style="border:1px solid #e1e5eb;border-radius:4px;height:132px;overflow:hidden">
+      <div class="node" style="padding-left:8px;border-radius:0">↑ <span class="sub">..</span></div>
+      <div class="node" style="padding-left:8px;border-radius:0"><span class="fold"></span>2019-wedding</div>
+      <div class="node" style="padding-left:8px;border-radius:0"><span class="fold"></span>family</div>
+      <div class="node on" style="padding-left:8px;border-radius:0"><span class="fold"></span>test1</div>
+      <div class="node" style="padding-left:8px;border-radius:0"><span class="fold"></span>test2</div>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:12px;align-items:flex-end">
+      <div style="flex:1"><div class="sub">Alias shown to Papa</div><div class="field">test1-papa</div></div>
+    </div>
+    <div style="display:flex;gap:18px;margin-top:12px">
+      <span><span class="chk"></span> Create</span><span><span class="chk on lock"></span> Read</span><span><span class="chk"></span> Update</span><span><span class="chk"></span> Delete</span>
+    </div>
+  </div>
+  <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;background:#f7f8fa;border-top:1px solid #eceff3"><span class="btn" style="border:1px solid #dde1e7">Cancel</span><span class="btn pri">Share</span></div>
+</div>

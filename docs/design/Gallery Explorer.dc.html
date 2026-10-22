@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+html,body{margin:0;height:100%;background:#eef1f5;}
+*{box-sizing:border-box;}
+a{color:#005fb8;text-decoration:none;}
+a:hover{color:#004a91;text-decoration:underline;}
+@keyframes ssFade{from{opacity:0}to{opacity:1}}
+@keyframes ssSlide{from{opacity:0;transform:translateX(60px)}to{opacity:1;transform:none}}
+@keyframes ssProg{from{width:0}to{width:100%}}
+@keyframes popIn{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+input[type=range]{accent-color:#005fb8;}
+</style>
+</helmet>
+<div style="height:100vh;display:flex;flex-direction:column;font-family:'Segoe UI Variable Text','Segoe UI',system-ui,-apple-system,sans-serif;color:#1b1b1f;font-size:13px;background:#eef1f5;overflow:hidden;">
+
+  <!-- Title bar -->
+  <div style="height:40px;display:flex;align-items:center;gap:10px;padding:0 8px 0 16px;flex-shrink:0;position:relative;z-index:15;">
+    <div style="width:18px;height:18px;border-radius:5px;background:#005fb8;display:flex;align-items:center;justify-content:center;">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="3" width="13" height="10" rx="1.5" stroke="#fff" stroke-width="1.6"></rect><path d="M3.5 11l3-3.2 2.2 2.2 1.6-1.6L13 11" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"></path></svg>
+    </div>
+    <div style="font-weight:600;font-size:13px;">Home Gallery</div>
+    <div style="color:#6b6f78;font-size:12px;">gallery.local</div>
+    <div style="flex:1;"></div>
+    <div style="position:relative;">
+      <button onClick="{{ toggleMenu }}" title="Account" style="height:32px;display:flex;align-items:center;gap:8px;padding:0 6px 0 10px;border:none;border-radius:6px;background:{{ menuBtnBg }};font:inherit;cursor:pointer;" style-hover="background:#dfe4ec;">
+        <span style="font-size:12px;color:#4a4e57;white-space:nowrap;">{{ meName }}</span>
+        <div style="width:24px;height:24px;border-radius:50%;background:{{ meColor }};color:#fff;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;">{{ meInitials }}</div>
+      </button>
+      <sc-if value="{{ menuOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeMenu }}" style="position:fixed;inset:0;z-index:1;"></div>
+        <div style="position:absolute;right:0;top:38px;z-index:2;width:240px;background:#fbfbfc;border-radius:8px;box-shadow:0 12px 32px rgba(0,0,0,.18),0 0 0 1px rgba(0,0,0,.06);padding:4px;animation:popIn .14s ease-out;">
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 10px 12px;border-bottom:1px solid #eceef2;margin-bottom:4px;">
+            <div style="width:36px;height:36px;border-radius:50%;background:{{ meColor }};color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;">{{ meInitials }}</div>
+            <div style="min-width:0;">
+              <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ meName }}</div>
+              <div style="font-size:12px;color:#5c616b;">{{ meRole }}</div>
+            </div>
+          </div>
+          <sc-for list="{{ menuItems }}" as="m" hint-placeholder-count="3">
+            <button onClick="{{ m.onClick }}" style="width:100%;height:34px;display:flex;align-items:center;padding:0 10px;border:none;border-radius:5px;background:transparent;font:inherit;color:#1b1b1f;text-align:left;cursor:pointer;" style-hover="background:#eef1f5;">{{ m.label }}</button>
+          </sc-for>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+
+  <!-- Command bar -->
+  <div style="display:flex;align-items:center;gap:8px;padding:4px 12px 8px;flex-shrink:0;">
+    <div style="display:flex;gap:2px;">
+      <button onClick="{{ goBack }}" title="Back" style="width:32px;height:32px;border:none;background:transparent;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:{{ backOpacity }};" style-hover="background:#dfe4ec;">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13 8H3M7 4L3 8l4 4" stroke="#1b1b1f" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+      </button>
+      <button onClick="{{ goForward }}" title="Forward" style="width:32px;height:32px;border:none;background:transparent;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:{{ fwdOpacity }};" style-hover="background:#dfe4ec;">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="#1b1b1f" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+      </button>
+      <button onClick="{{ goUp }}" title="Up" style="width:32px;height:32px;border:none;background:transparent;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:{{ upOpacity }};" style-hover="background:#dfe4ec;">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 13V3M4 7l4-4 4 4" stroke="#1b1b1f" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+      </button>
+    </div>
+    <div style="flex:1;min-width:0;height:32px;background:#fff;border:1px solid #dcdfe5;border-radius:6px;display:flex;align-items:center;gap:2px;padding:0 6px;overflow:hidden;">
+      <svg width="16" height="16" viewBox="0 0 16 16" style="flex-shrink:0;margin-right:4px;"><path d="M1.5 4.5a1 1 0 011-1h3.6l1.4 1.4h6a1 1 0 011 1v6.6a1 1 0 01-1 1h-11a1 1 0 01-1-1z" fill="#f2bf4b"></path></svg>
+      <sc-for list="{{ crumbs }}" as="c" hint-placeholder-count="2">
+        <div style="display:flex;align-items:center;gap:2px;flex-shrink:0;">
+          <svg width="12" height="12" viewBox="0 0 12 12"><path d="M4.5 2.5L8 6l-3.5 3.5" stroke="#8a8f99" stroke-width="1.2" fill="none" stroke-linecap="round"></path></svg>
+          <button onClick="{{ c.onClick }}" style="border:none;background:transparent;padding:4px 6px;border-radius:4px;font:inherit;color:#1b1b1f;cursor:pointer;white-space:nowrap;" style-hover="background:#eef1f5;">{{ c.name }}</button>
+        </div>
+      </sc-for>
+    </div>
+    <div style="width:240px;flex-shrink:1;min-width:120px;height:32px;background:#fff;border:1px solid #dcdfe5;border-radius:6px;display:flex;align-items:center;gap:8px;padding:0 10px;">
+      <input value="{{ query }}" onChange="{{ onQuery }}" placeholder="{{ searchPlaceholder }}" style="flex:1;min-width:0;border:none;outline:none;font:inherit;background:transparent;color:#1b1b1f;"></input>
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="#6b6f78" stroke-width="1.3"></circle><path d="M10.5 10.5L14 14" stroke="#6b6f78" stroke-width="1.3" stroke-linecap="round"></path></svg>
+    </div>
+  </div>
+
+  <!-- Body -->
+  <div style="flex:1;min-height:0;display:flex;">
+    <!-- Sidebar -->
+    <div style="width:232px;flex-shrink:0;padding:4px 8px 12px;overflow:auto;display:flex;flex-direction:column;gap:1px;">
+      <sc-for list="{{ tree }}" as="t" hint-placeholder-count="6">
+        <div onClick="{{ t.onOpen }}" style="height:30px;display:flex;align-items:center;gap:6px;padding-left:{{ t.pad }}px;padding-right:8px;border-radius:5px;cursor:pointer;position:relative;background:{{ t.bg }};font-weight:{{ t.weight }};" style-hover="box-shadow:inset 0 0 0 1px #d5dbe5;">
+          <div style="position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:2px;background:#005fb8;opacity:{{ t.barOpacity }};"></div>
+          <div onClick="{{ t.onToggle }}" style="width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-radius:3px;opacity:{{ t.chevOpacity }};transform:rotate({{ t.rot }}deg);transition:transform .15s;">
+            <svg width="10" height="10" viewBox="0 0 12 12"><path d="M4.5 2.5L8 6l-3.5 3.5" stroke="#5c616b" stroke-width="1.4" fill="none" stroke-linecap="round"></path></svg>
+          </div>
+          <svg width="16" height="16" viewBox="0 0 16 16" style="flex-shrink:0;"><path d="M1.5 4.5a1 1 0 011-1h3.6l1.4 1.4h6a1 1 0 011 1v6.6a1 1 0 01-1 1h-11a1 1 0 01-1-1z" fill="#f2bf4b"></path><path d="M1.5 6.5h13v5.9a1 1 0 01-1 1h-11a1 1 0 01-1-1z" fill="#f8d36f"></path></svg>
+          <div style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ t.name }}</div>
+          <div style="color:#8a8f99;font-size:11px;">{{ t.count }}</div>
+        </div>
+      </sc-for>
+    </div>
+
+    <!-- Content pane -->
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#fff;border-top-left-radius:8px;border:1px solid #e1e4ea;border-right:none;border-bottom:none;">
+      <!-- Toolbar -->
+      <div style="height:48px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid #eceef2;overflow-x:auto;overflow-y:hidden;">
+        <button onClick="{{ openModal }}" style="height:32px;display:flex;align-items:center;gap:8px;padding:0 14px 0 11px;white-space:nowrap;flex-shrink:0;border:none;border-radius:6px;background:#005fb8;color:#fff;font:inherit;font-weight:600;cursor:pointer;" style-hover="background:#0a6ccc;">
+          <svg width="14" height="14" viewBox="0 0 16 16"><path d="M4.5 2.8v10.4a.6.6 0 00.9.5l8.2-5.2a.6.6 0 000-1L5.4 2.3a.6.6 0 00-.9.5z" fill="#fff"></path></svg>
+          Slideshow
+        </button>
+        <div style="width:1px;height:20px;background:#e1e4ea;margin:0 4px;"></div>
+        <button onClick="{{ cycleSort }}" style="height:32px;display:flex;align-items:center;gap:6px;padding:0 10px;white-space:nowrap;flex-shrink:0;border:none;border-radius:6px;background:transparent;font:inherit;color:#1b1b1f;cursor:pointer;" style-hover="background:#eef1f5;">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M4 2.5v11M1.8 11.2L4 13.5l2.2-2.3M9 4h5M9 8h3.5M9 12h2" stroke="#1b1b1f" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+          {{ sortLabel }}
+        </button>
+        <button onClick="{{ selectAll }}" style="height:32px;display:flex;align-items:center;gap:6px;padding:0 10px;white-space:nowrap;flex-shrink:0;border:none;border-radius:6px;background:transparent;font:inherit;color:#1b1b1f;cursor:pointer;" style-hover="background:#eef1f5;">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" stroke="#1b1b1f" stroke-width="1.2"></rect><path d="M5 8.2l2 2 4-4.2" stroke="#1b1b1f" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+          {{ selectLabel }}
+        </button>
+        <sc-if value="{{ readOnly }}" hint-placeholder-val="{{ false }}">
+          <div style="height:24px;display:flex;align-items:center;gap:6px;padding:0 10px;border-radius:12px;background:#f1f3f6;color:#4a4e57;font-size:12px;white-space:nowrap;flex-shrink:0;">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="3" y="7" width="10" height="7" rx="1.5" stroke="#4a4e57" stroke-width="1.3"></rect><path d="M5.5 7V5a2.5 2.5 0 015 0v2" stroke="#4a4e57" stroke-width="1.3"></path></svg>
+            Read only
+          </div>
+        </sc-if>
+        <div style="flex:1;"></div>
+        <div style="display:flex;gap:2px;padding:2px;background:#f1f3f6;border-radius:7px;flex-shrink:0;">
+          <sc-for list="{{ views }}" as="v" hint-placeholder-count="3">
+            <button onClick="{{ v.onClick }}" title="{{ v.label }}" style="height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;white-space:nowrap;border:none;border-radius:5px;font:inherit;cursor:pointer;background:{{ v.bg }};box-shadow:{{ v.shadow }};color:#1b1b1f;">
+              <sc-if value="{{ v.isLarge }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" rx="1" stroke="#1b1b1f" stroke-width="1.2"></rect><rect x="9" y="2" width="5" height="5" rx="1" stroke="#1b1b1f" stroke-width="1.2"></rect><rect x="2" y="9" width="5" height="5" rx="1" stroke="#1b1b1f" stroke-width="1.2"></rect><rect x="9" y="9" width="5" height="5" rx="1" stroke="#1b1b1f" stroke-width="1.2"></rect></svg></sc-if>
+              <sc-if value="{{ v.isMedium }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="#1b1b1f"><rect x="2" y="2" width="3" height="3" rx=".6"></rect><rect x="6.5" y="2" width="3" height="3" rx=".6"></rect><rect x="11" y="2" width="3" height="3" rx=".6"></rect><rect x="2" y="6.5" width="3" height="3" rx=".6"></rect><rect x="6.5" y="6.5" width="3" height="3" rx=".6"></rect><rect x="11" y="6.5" width="3" height="3" rx=".6"></rect><rect x="2" y="11" width="3" height="3" rx=".6"></rect><rect x="6.5" y="11" width="3" height="3" rx=".6"></rect><rect x="11" y="11" width="3" height="3" rx=".6"></rect></svg></sc-if>
+              <sc-if value="{{ v.isDetails }}"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 3.5h12M2 8h12M2 12.5h12" stroke="#1b1b1f" stroke-width="1.2" stroke-linecap="round"></path></svg></sc-if>
+              <sc-if value="{{ v.showLabel }}"><span>{{ v.label }}</span></sc-if>
+            </button>
+          </sc-for>
+        </div>
+      </div>
+
+      <!-- Items -->
+      <div onClick="{{ clearSel }}" style="flex:1;min-height:0;overflow:auto;">
+        <sc-if value="{{ isEmpty }}">
+          <div style="padding:64px 24px;text-align:center;color:#6b6f78;">{{ emptyText }}</div>
+        </sc-if>
+
+        <sc-if value="{{ isTiles }}" hint-placeholder-val="{{ true }}">
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax({{ tileMin }}px,1fr));gap:4px;padding:12px;">
+            <sc-for list="{{ items }}" as="it" hint-placeholder-count="12">
+              <div onClick="{{ it.onClick }}" onDoubleClick="{{ it.onOpen }}" style="padding:8px 8px 10px;border-radius:6px;cursor:default;display:flex;flex-direction:column;align-items:center;gap:8px;background:{{ it.bg }};box-shadow:{{ it.ring }};user-select:none;" style-hover="box-shadow:inset 0 0 0 1px #c9d6e6;">
+                <div style="width:100%;aspect-ratio:4/3;position:relative;display:flex;align-items:center;justify-content:center;">
+                  <sc-if value="{{ it.isFolder }}" hint-placeholder-val="{{ false }}">
+                    <div style="position:relative;width:86%;height:82%;">
+                      <svg viewBox="0 0 100 76" preserveAspectRatio="none" style="position:absolute;inset:0;width:100%;height:100%;"><path d="M0 6a5 5 0 015-5h28l8 8h54a5 5 0 015 5v57a5 5 0 01-5 5H5a5 5 0 01-5-5z" fill="#e9b33f"></path></svg>
+                      <sc-if value="{{ it.cover }}" hint-placeholder-val="{{ false }}"><img src="{{ it.cover }}" alt="" loading="lazy" style="position:absolute;left:10%;right:10%;top:16%;height:58%;width:80%;object-fit:cover;border-radius:3px;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.2);"></img></sc-if>
+                      <svg viewBox="0 0 100 50" preserveAspectRatio="none" style="position:absolute;left:0;right:0;bottom:0;width:100%;height:58%;"><path d="M0 5a5 5 0 015-5h90a5 5 0 015 5v40a5 5 0 01-5 5H5a5 5 0 01-5-5z" fill="#f7cd62" fill-opacity=".96"></path></svg>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ it.isFile }}" hint-placeholder-val="{{ false }}">
+                    <img src="{{ it.thumb }}" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover;border-radius:4px;background:#e8ebf0;display:block;"></img>
+                    <sc-if value="{{ it.video }}" hint-placeholder-val="{{ false }}">
+                      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;">
+                        <div style="width:34px;height:34px;border-radius:50%;background:rgba(20,22,26,.55);display:flex;align-items:center;justify-content:center;">
+                          <svg width="14" height="14" viewBox="0 0 16 16"><path d="M5 3v10l8-5z" fill="#fff"></path></svg>
+                        </div>
+                      </div>
+                      <div style="position:absolute;right:6px;bottom:6px;padding:1px 6px;border-radius:4px;background:rgba(20,22,26,.72);color:#fff;font-size:11px;font-variant-numeric:tabular-nums;">{{ it.durText }}</div>
+                    </sc-if>
+                  </sc-if>
+                </div>
+                <div style="width:100%;text-align:center;font-size:12px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ it.name }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isDetails }}">
+          <div style="min-width:640px;">
+            <div style="position:sticky;top:0;z-index:1;background:#fff;display:grid;grid-template-columns:minmax(0,2.4fr) minmax(0,1.4fr) minmax(0,.9fr) minmax(0,.7fr) minmax(0,.9fr);padding:0 12px;height:34px;align-items:stretch;border-bottom:1px solid #eceef2;color:#4a4e57;">
+              <sc-for list="{{ cols }}" as="c" hint-placeholder-count="5">
+                <button onClick="{{ c.onClick }}" style="border:none;background:transparent;font:inherit;color:inherit;text-align:left;padding:0 8px;display:flex;align-items:center;gap:6px;cursor:pointer;border-right:1px solid #f0f1f4;" style-hover="background:#f5f7fa;">
+                  <span>{{ c.label }}</span><span style="font-size:10px;color:#005fb8;">{{ c.arrow }}</span>
+                </button>
+              </sc-for>
+            </div>
+            <div style="padding:4px 12px 12px;">
+              <sc-for list="{{ items }}" as="it" hint-placeholder-count="10">
+                <div onClick="{{ it.onClick }}" onDoubleClick="{{ it.onOpen }}" style="display:grid;grid-template-columns:minmax(0,2.4fr) minmax(0,1.4fr) minmax(0,.9fr) minmax(0,.7fr) minmax(0,.9fr);height:36px;align-items:center;border-radius:4px;background:{{ it.bg }};box-shadow:{{ it.ring }};user-select:none;" style-hover="box-shadow:inset 0 0 0 1px #c9d6e6;">
+                  <div style="display:flex;align-items:center;gap:10px;padding:0 8px;min-width:0;">
+                    <sc-if value="{{ it.isFolder }}" hint-placeholder-val="{{ false }}">
+                      <svg width="22" height="22" viewBox="0 0 16 16" style="flex-shrink:0;"><path d="M1.5 4.5a1 1 0 011-1h3.6l1.4 1.4h6a1 1 0 011 1v6.6a1 1 0 01-1 1h-11a1 1 0 01-1-1z" fill="#e9b33f"></path><path d="M1.5 6.5h13v5.9a1 1 0 01-1 1h-11a1 1 0 01-1-1z" fill="#f7cd62"></path></svg>
+                    </sc-if>
+                    <sc-if value="{{ it.isFile }}" hint-placeholder-val="{{ false }}">
+                      <div style="position:relative;width:28px;height:22px;flex-shrink:0;">
+                        <img src="{{ it.thumb }}" alt="" loading="lazy" style="width:28px;height:22px;object-fit:cover;border-radius:3px;display:block;background:#e8ebf0;"></img>
+                        <sc-if value="{{ it.video }}" hint-placeholder-val="{{ false }}"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 16 16"><path d="M4 2v12l10-6z" fill="#fff" stroke="rgba(0,0,0,.4)" stroke-width="1"></path></svg></div></sc-if>
+                      </div>
+                    </sc-if>
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ it.name }}</span>
+                  </div>
+                  <div style="padding:0 8px;color:#5c616b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;">{{ it.dateText }}</div>
+                  <div style="padding:0 8px;color:#5c616b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ it.type }}</div>
+                  <div style="padding:0 8px;color:#5c616b;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;">{{ it.sizeText }}</div>
+                  <div style="padding:0 8px;color:#5c616b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;">{{ it.dims }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+
+      <!-- Status bar -->
+      <div style="height:28px;flex-shrink:0;display:flex;align-items:center;gap:16px;padding:0 16px;border-top:1px solid #eceef2;color:#5c616b;font-size:12px;">
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">{{ statusCount }}</span>
+        <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">{{ statusSel }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Slideshow config modal -->
+  <sc-if value="{{ modalOpen }}">
+    <div onClick="{{ closeModal }}" style="position:fixed;inset:0;background:rgba(20,24,32,.32);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px;">
+      <div onClick="{{ stop }}" style="width:420px;max-width:100%;background:#fbfbfc;border-radius:10px;box-shadow:0 24px 64px rgba(0,0,0,.28),0 0 0 1px rgba(0,0,0,.06);animation:popIn .18s ease-out;overflow:hidden;">
+        <div style="padding:22px 24px 6px;">
+          <div style="font-size:18px;font-weight:600;">Start slideshow</div>
+          <div style="color:#5c616b;margin-top:4px;">{{ modalSub }}</div>
+        </div>
+        <div style="padding:14px 24px 20px;display:flex;flex-direction:column;gap:18px;">
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;">
+              <span style="font-weight:600;">Slide time</span>
+              <span style="font-variant-numeric:tabular-nums;color:#005fb8;font-weight:600;">{{ durText }}</span>
+            </div>
+            <input type="range" min="2" max="20" step="1" value="{{ cfgDur }}" onChange="{{ onDur }}" style="width:100%;"></input>
+          </div>
+          <sc-if value="{{ hasSelection }}">
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              <span style="font-weight:600;">Play</span>
+              <div style="display:flex;gap:2px;padding:2px;background:#eceef2;border-radius:7px;">
+                <sc-for list="{{ scopeOpts }}" as="o" hint-placeholder-count="2">
+                  <button onClick="{{ o.onClick }}" style="flex:1;height:30px;border:none;border-radius:5px;font:inherit;cursor:pointer;background:{{ o.bg }};box-shadow:{{ o.shadow }};color:#1b1b1f;">{{ o.label }}</button>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <span style="font-weight:600;">Transition</span>
+            <div style="display:flex;gap:2px;padding:2px;background:#eceef2;border-radius:7px;">
+              <sc-for list="{{ transOpts }}" as="o" hint-placeholder-count="3">
+                <button onClick="{{ o.onClick }}" style="flex:1;height:30px;border:none;border-radius:5px;font:inherit;cursor:pointer;background:{{ o.bg }};box-shadow:{{ o.shadow }};color:#1b1b1f;">{{ o.label }}</button>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;">
+            <sc-for list="{{ toggles }}" as="g" hint-placeholder-count="4">
+              <div onClick="{{ g.onClick }}" style="display:flex;align-items:center;justify-content:space-between;height:40px;cursor:pointer;border-top:1px solid #eceef2;">
+                <span>{{ g.label }}</span>
+                <div style="width:40px;height:20px;border-radius:10px;background:{{ g.track }};border:1px solid {{ g.border }};position:relative;transition:background .15s;">
+                  <div style="position:absolute;top:3px;left:{{ g.knob }}px;width:12px;height:12px;border-radius:50%;background:{{ g.knobBg }};transition:left .15s;"></div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;padding:16px 24px;background:#f1f3f6;border-top:1px solid #e6e8ec;">
+          <button onClick="{{ closeModal }}" style="height:32px;padding:0 18px;border-radius:6px;border:1px solid #d5d9e0;background:#fff;font:inherit;cursor:pointer;color:#1b1b1f;" style-hover="background:#f7f8fa;">Cancel</button>
+          <button onClick="{{ startShow }}" style="height:32px;padding:0 18px;border-radius:6px;border:none;background:#005fb8;color:#fff;font:inherit;font-weight:600;cursor:pointer;opacity:{{ startOpacity }};" style-hover="background:#0a6ccc;">{{ startLabel }}</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- Settings -->
+  <sc-if value="{{ settingsOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeSettings }}" style="position:fixed;inset:0;background:rgba(20,24,32,.32);display:flex;align-items:center;justify-content:center;z-index:25;padding:16px;">
+      <div onClick="{{ stop }}" style="width:900px;max-width:100%;height:620px;max-height:100%;background:#f7f8fa;border-radius:10px;box-shadow:0 24px 64px rgba(0,0,0,.28),0 0 0 1px rgba(0,0,0,.06);display:flex;overflow:hidden;animation:popIn .18s ease-out;">
+        <div style="width:220px;flex-shrink:0;padding:20px 10px;display:flex;flex-direction:column;gap:2px;background:#eef1f5;border-right:1px solid #e3e6eb;">
+          <div style="display:flex;align-items:center;gap:10px;padding:0 10px 18px;">
+            <div style="width:36px;height:36px;border-radius:50%;background:{{ meColor }};color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;">{{ meInitials }}</div>
+            <div style="min-width:0;">
+              <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ meName }}</div>
+              <div style="font-size:12px;color:#5c616b;">{{ meRole }}</div>
+            </div>
+          </div>
+          <sc-for list="{{ setTabs }}" as="t" hint-placeholder-count="2">
+            <button onClick="{{ t.onClick }}" style="position:relative;height:34px;border:none;border-radius:5px;background:{{ t.bg }};font:inherit;font-weight:{{ t.weight }};color:#1b1b1f;text-align:left;padding:0 14px;cursor:pointer;" style-hover="box-shadow:inset 0 0 0 1px #d5dbe5;">
+              <div style="position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:2px;background:#005fb8;opacity:{{ t.bar }};"></div>
+              {{ t.label }}
+            </button>
+          </sc-for>
+        </div>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;">
+          <div style="height:60px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 16px 0 28px;">
+            <div style="font-size:20px;font-weight:600;">{{ tabTitle }}</div>
+            <button onClick="{{ closeSettings }}" title="Close" style="width:32px;height:32px;border:none;border-radius:6px;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;" style-hover="background:#e6e9ee;">
+              <svg width="12" height="12" viewBox="0 0 16 16"><path d="M3 3l10 10M13 3L3 13" stroke="#1b1b1f" stroke-width="1.5" stroke-linecap="round"></path></svg>
+            </button>
+          </div>
+          <div style="flex:1;min-height:0;overflow:auto;padding:0 28px 28px;">
+
+            <sc-if value="{{ tabGeneral }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex;flex-direction:column;gap:20px;">
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div style="font-weight:600;">Library</div>
+                  <div style="background:#fff;border:1px solid #e3e6eb;border-radius:8px;">
+                    <div style="display:flex;align-items:center;gap:16px;padding:14px 16px;flex-wrap:wrap;">
+                      <div style="flex:1;min-width:180px;">
+                        <div>Media folder</div>
+                        <div style="font-size:12px;color:#5c616b;">Folder on the server that holds your photos and videos</div>
+                      </div>
+                      <input value="{{ libPath }}" onChange="{{ onLibPath }}" readOnly="{{ notAdmin }}" style="width:220px;height:32px;border:1px solid #d5d9e0;border-bottom-color:#8a8f99;border-radius:5px;padding:0 10px;font:inherit;font-family:ui-monospace,Consolas,monospace;font-size:12px;background:#fbfbfc;color:#1b1b1f;outline:none;"></input>
+                    </div>
+                    <sc-if value="{{ isAdmin }}">
+                      <div style="display:flex;align-items:center;gap:16px;padding:14px 16px;border-top:1px solid #eceef2;flex-wrap:wrap;">
+                        <div style="flex:1;min-width:180px;">
+                          <div>Rescan library</div>
+                          <div style="font-size:12px;color:#5c616b;">{{ scanText }}</div>
+                        </div>
+                        <button onClick="{{ rescan }}" style="height:32px;padding:0 16px;border-radius:6px;border:1px solid #d5d9e0;background:#fff;font:inherit;cursor:pointer;color:#1b1b1f;white-space:nowrap;" style-hover="background:#f7f8fa;">Rescan now</button>
+                      </div>
+                    </sc-if>
+                  </div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div style="font-weight:600;">Browsing</div>
+                  <div style="background:#fff;border:1px solid #e3e6eb;border-radius:8px;">
+                    <div style="display:flex;align-items:center;gap:16px;padding:14px 16px;flex-wrap:wrap;">
+                      <div style="flex:1;min-width:180px;">Default view</div>
+                      <div style="display:flex;gap:2px;padding:2px;background:#eceef2;border-radius:7px;">
+                        <sc-for list="{{ defViewOpts }}" as="o" hint-placeholder-count="3">
+                          <button onClick="{{ o.onClick }}" style="height:28px;padding:0 12px;border:none;border-radius:5px;font:inherit;cursor:pointer;white-space:nowrap;background:{{ o.bg }};box-shadow:{{ o.shadow }};color:{{ o.color }};font-weight:{{ o.weight }};">{{ o.label }}</button>
+                        </sc-for>
+                      </div>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:16px;padding:14px 16px;border-top:1px solid #eceef2;flex-wrap:wrap;">
+                      <div style="flex:1;min-width:180px;">Default slide time</div>
+                      <div style="display:flex;align-items:center;gap:12px;">
+                        <input type="range" min="2" max="20" step="1" value="{{ cfgDur }}" onChange="{{ onDur }}" style="width:160px;"></input>
+                        <span style="width:28px;font-variant-numeric:tabular-nums;color:#005fb8;font-weight:600;">{{ durShort }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                  <div style="font-weight:600;">Account</div>
+                  <div style="background:#fff;border:1px solid #e3e6eb;border-radius:8px;display:flex;align-items:center;gap:16px;padding:14px 16px;flex-wrap:wrap;">
+                    <div style="flex:1;min-width:180px;">
+                      <div>Signed in as {{ meName }}</div>
+                      <div style="font-size:12px;color:#5c616b;">{{ meRole }}</div>
+                    </div>
+                    <button style="height:32px;padding:0 16px;border-radius:6px;border:1px solid #d5d9e0;background:#fff;font:inherit;cursor:pointer;color:#1b1b1f;" style-hover="background:#f7f8fa;">Sign out</button>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ tabUsers }}" hint-placeholder-val="{{ false }}">
+              <div style="display:grid;grid-template-columns:220px minmax(0,1fr);gap:16px;align-items:start;">
+                <div style="display:flex;flex-direction:column;gap:8px;">
+                  <div style="display:flex;align-items:center;justify-content:space-between;">
+                    <span style="color:#5c616b;font-size:12px;">{{ userCount }}</span>
+                    <button onClick="{{ addUser }}" style="height:28px;display:flex;align-items:center;gap:6px;padding:0 10px;border:none;border-radius:6px;background:#005fb8;color:#fff;font:inherit;font-weight:600;cursor:pointer;" style-hover="background:#0a6ccc;">
+                      <svg width="10" height="10" viewBox="0 0 12 12"><path d="M6 1v10M1 6h10" stroke="#fff" stroke-width="1.6" stroke-linecap="round"></path></svg>
+                      Add user
+                    </button>
+                  </div>
+                  <div style="background:#fff;border:1px solid #e3e6eb;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:2px;">
+                    <sc-for list="{{ userList }}" as="u" hint-placeholder-count="4">
+                      <div onClick="{{ u.onClick }}" style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:5px;cursor:pointer;background:{{ u.bg }};" style-hover="box-shadow:inset 0 0 0 1px #d5dbe5;">
+                        <div style="width:30px;height:30px;border-radius:50%;background:{{ u.color }};color:#fff;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;">{{ u.initials }}</div>
+                        <div style="min-width:0;">
+                          <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ u.name }}</div>
+                          <div style="font-size:12px;color:#5c616b;white-space:nowrap;">{{ u.sub }}</div>
+                        </div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+
+                <div style="background:#fff;border:1px solid #e3e6eb;border-radius:8px;display:flex;flex-direction:column;">
+                  <div style="display:flex;align-items:center;gap:12px;padding:16px;border-bottom:1px solid #eceef2;">
+                    <div style="width:44px;height:44px;border-radius:50%;background:{{ suColor }};color:#fff;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;">{{ suInitials }}</div>
+                    <div style="flex:1;min-width:0;">
+                      <div style="font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ suName }}</div>
+                      <div style="font-size:12px;color:#5c616b;">@{{ suLogin }}</div>
+                    </div>
+                    <sc-if value="{{ canRemove }}">
+                      <button onClick="{{ removeUser }}" style="height:30px;padding:0 12px;border-radius:6px;border:1px solid #e3c5c6;background:#fff;color:#a4373a;font:inherit;cursor:pointer;white-space:nowrap;" style-hover="background:#fbf1f1;">Remove user</button>
+                    </sc-if>
+                  </div>
+                  <div style="padding:16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">
+                    <label style="display:flex;flex-direction:column;gap:6px;">
+                      <span style="font-size:12px;color:#4a4e57;">Display name</span>
+                      <input value="{{ suName }}" onChange="{{ onSuName }}" style="height:32px;border:1px solid #d5d9e0;border-bottom-color:#8a8f99;border-radius:5px;padding:0 10px;font:inherit;background:#fbfbfc;color:#1b1b1f;outline:none;"></input>
+                    </label>
+                    <label style="display:flex;flex-direction:column;gap:6px;">
+                      <span style="font-size:12px;color:#4a4e57;">Username</span>
+                      <input value="{{ suLogin }}" onChange="{{ onSuLogin }}" style="height:32px;border:1px solid #d5d9e0;border-bottom-color:#8a8f99;border-radius:5px;padding:0 10px;font:inherit;background:#fbfbfc;color:#1b1b1f;outline:none;"></input>
+                    </label>
+                  </div>
+                  <div style="padding:0 16px 16px;display:flex;flex-direction:column;gap:6px;">
+                    <span style="font-size:12px;color:#4a4e57;">Role</span>
+                    <sc-if value="{{ roleEditable }}">
+                      <div style="display:flex;gap:2px;padding:2px;background:#eceef2;border-radius:7px;align-self:flex-start;">
+                        <sc-for list="{{ roleOpts }}" as="o" hint-placeholder-count="2">
+                          <button onClick="{{ o.onClick }}" style="height:28px;padding:0 14px;border:none;border-radius:5px;font:inherit;cursor:pointer;background:{{ o.bg }};box-shadow:{{ o.shadow }};color:{{ o.color }};font-weight:{{ o.weight }};">{{ o.label }}</button>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ roleLocked }}">
+                      <div style="color:#5c616b;">Administrator · you can't change your own role.</div>
+                    </sc-if>
+                  </div>
+                  <div style="border-top:1px solid #eceef2;padding:16px 16px 6px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                    <span style="font-weight:600;">Folder access</span>
+                    <span style="font-size:12px;color:#5c616b;">Changes also apply to subfolders</span>
+                  </div>
+                  <sc-if value="{{ suIsAdmin }}">
+                    <div style="margin:6px 16px 16px;padding:12px 14px;border-radius:6px;background:#eef4fb;color:#1b3a5c;display:flex;gap:10px;align-items:center;">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="flex-shrink:0;"><path d="M8 1.5l5.5 2v4c0 3.3-2.3 5.8-5.5 7-3.2-1.2-5.5-3.7-5.5-7v-4z" stroke="#005fb8" stroke-width="1.3" stroke-linejoin="round"></path><path d="M5.5 8l1.8 1.8L10.8 6.3" stroke="#005fb8" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                      Administrators have read and write access to every folder.
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ suIsMember }}">
+                    <div style="padding:4px 8px 12px;display:flex;flex-direction:column;">
+                      <sc-for list="{{ permRows }}" as="r" hint-placeholder-count="6">
+                        <div style="display:flex;align-items:center;gap:8px;min-height:40px;padding:4px 8px 4px {{ r.pad }}px;border-radius:5px;" style-hover="background:#f7f8fa;">
+                          <svg width="16" height="16" viewBox="0 0 16 16" style="flex-shrink:0;opacity:{{ r.iconOpacity }};"><path d="M1.5 4.5a1 1 0 011-1h3.6l1.4 1.4h6a1 1 0 011 1v6.6a1 1 0 01-1 1h-11a1 1 0 01-1-1z" fill="#e9b33f"></path><path d="M1.5 6.5h13v5.9a1 1 0 01-1 1h-11a1 1 0 01-1-1z" fill="#f7cd62"></path></svg>
+                          <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{{ r.textColor }};">{{ r.name }}</span>
+                          <div style="display:flex;gap:2px;padding:2px;background:#eceef2;border-radius:6px;flex-shrink:0;">
+                            <sc-for list="{{ r.opts }}" as="o" hint-placeholder-count="3">
+                              <button onClick="{{ o.onClick }}" style="height:24px;width:56px;border:none;border-radius:4px;font:inherit;font-size:12px;cursor:pointer;background:{{ o.bg }};box-shadow:{{ o.shadow }};color:{{ o.color }};font-weight:{{ o.weight }};">{{ o.label }}</button>
+                            </sc-for>
+                          </div>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </sc-if>
+                </div>
+              </div>
+            </sc-if>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- Slideshow player -->
+  <sc-if value="{{ ssOpen }}">
+    <div style="position:fixed;inset:0;background:#0b0c0e;z-index:30;color:#fff;display:flex;flex-direction:column;">
+      <div style="height:52px;display:flex;align-items:center;gap:12px;padding:0 16px;flex-shrink:0;">
+        <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ ssName }}</div>
+        <div style="color:#9a9fa8;font-size:12px;white-space:nowrap;">{{ ssMeta }}</div>
+        <div style="flex:1;"></div>
+        <div style="color:#9a9fa8;font-variant-numeric:tabular-nums;">{{ ssCounter }}</div>
+        <button onClick="{{ closeShow }}" title="Close (Esc)" style="width:36px;height:36px;border:none;border-radius:6px;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;" style-hover="background:rgba(255,255,255,.1);">
+          <svg width="14" height="14" viewBox="0 0 16 16"><path d="M3 3l10 10M13 3L3 13" stroke="#fff" stroke-width="1.5" stroke-linecap="round"></path></svg>
+        </button>
+      </div>
+      <div style="flex:1;min-height:0;position:relative;overflow:hidden;">{{ stage }}</div>
+      <div style="height:72px;flex-shrink:0;display:flex;align-items:center;justify-content:center;gap:12px;">
+        <button onClick="{{ prev }}" title="Previous (←)" style="width:40px;height:40px;border:none;border-radius:50%;background:rgba(255,255,255,.08);cursor:pointer;display:flex;align-items:center;justify-content:center;" style-hover="background:rgba(255,255,255,.16);">
+          <svg width="16" height="16" viewBox="0 0 16 16"><path d="M10 3L5 8l5 5" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        </button>
+        <button onClick="{{ togglePlay }}" title="Play / Pause (Space)" style="width:48px;height:48px;border:none;border-radius:50%;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;">
+          <sc-if value="{{ ssPlaying }}"><svg width="16" height="16" viewBox="0 0 16 16" fill="#0b0c0e"><rect x="3.5" y="2.5" width="3" height="11" rx="1"></rect><rect x="9.5" y="2.5" width="3" height="11" rx="1"></rect></svg></sc-if>
+          <sc-if value="{{ ssPaused }}"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M4.5 2.8v10.4a.6.6 0 00.9.5l8.2-5.2a.6.6 0 000-1L5.4 2.3a.6.6 0 00-.9.5z" fill="#0b0c0e"></path></svg></sc-if>
+        </button>
+        <button onClick="{{ next }}" title="Next (→)" style="width:40px;height:40px;border:none;border-radius:50%;background:rgba(255,255,255,.08);cursor:pointer;display:flex;align-items:center;justify-content:center;" style-hover="background:rgba(255,255,255,.16);">
+          <svg width="16" height="16" viewBox="0 0 16 16"><path d="M6 3l5 5-5 5" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        </button>
+      </div>
+      <div style="height:3px;background:rgba(255,255,255,.1);flex-shrink:0;">{{ progress }}</div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;signedInAs&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Alex (admin)&quot;,&quot;Sam (member)&quot;],&quot;default&quot;:&quot;Alex (admin)&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;defaultView&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Large icons&quot;,&quot;Medium icons&quot;,&quot;Details&quot;],&quot;default&quot;:&quot;Large icons&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;slideSeconds&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;min&quot;:2,&quot;max&quot;:20,&quot;default&quot;:5,&quot;tsType&quot;:&quot;number&quot;}}">
+const PIC = (s, w, h) => `https://picsum.photos/seed/${s}/${w}/${h}`;
+function mk(seed, n, o = {}) {
+  const start = new Date(o.date || '2026-03-14T09:00').getTime();
+  return Array.from({ length: n }, (_, i) => {
+    const video = o.allVideo || (o.videoEvery ? i % o.videoEvery === o.videoEvery - 1 : false);
+    const num = (o.num || 2040) + i * 3;
+    const png = !!o.png;
+    return {
+      id: `${seed}-${i}`, seed: `${seed}${i}`, video,
+      name: video ? `VID_${num}.mp4` : png ? `Screenshot ${String(i + 1).padStart(2, '0')}.png` : `IMG_${num}.jpg`,
+      type: video ? 'MP4 video' : png ? 'PNG image' : 'JPEG image',
+      date: new Date(start + i * (o.step || 41) * 60000),
+      size: video ? (38 + (i * 37) % 210) * 1e6 : (1.8 + ((i * 13) % 55) / 10) * 1e6,
+      dims: video ? '1920 × 1080' : png ? '2560 × 1440' : (i % 5 === 2 ? '3024 × 4032' : '4032 × 3024'),
+      dur: video ? 9 + (i * 17) % 110 : 0,
+    };
+  });
+}
+const TREE = { id: 'root', name: 'Library', children: [
+  { id: 'travel', name: 'Travel', children: [
+    { id: 'iceland', name: 'Iceland 2026', files: mk('ice', 18, { videoEvery: 6, date: '2026-03-14T08:10', num: 3101 }) },
+    { id: 'lisbon', name: 'Lisbon 2025', files: mk('lis', 12, { videoEvery: 5, date: '2025-09-02T11:00', num: 1820 }) },
+  ] },
+  { id: 'family', name: 'Family', files: mk('fam', 4, { date: '2025-12-24T18:00', num: 2610 }), children: [
+    { id: 'bday', name: 'Birthdays', files: mk('bday', 9, { videoEvery: 4, date: '2025-06-21T16:00', num: 1402 }) },
+    { id: 'summer', name: 'Summer house', files: mk('sum', 14, { videoEvery: 7, date: '2025-07-11T10:00', num: 1530 }) },
+  ] },
+  { id: 'drone', name: 'Drone footage', files: mk('drn', 8, { allVideo: true, date: '2026-05-03T19:20', num: 4400, step: 300 }) },
+  { id: 'roll', name: 'Camera roll', files: mk('roll', 24, { videoEvery: 8, date: '2026-10-01T07:00', num: 5012, step: 180 }) },
+  { id: 'shots', name: 'Screenshots', files: mk('scr', 6, { png: true, date: '2026-08-12T14:00', step: 900 }) },
+] };
+const MAP = {};
+(function index(n, p) { n.parent = p; n.children = n.children || []; n.files = n.files || []; MAP[n.id] = n; n.children.forEach(c => index(c, n)); })(TREE, null);
+const allFiles = n => [...n.files, ...n.children.flatMap(allFiles)];
+const coverOf = n => { const f = allFiles(n)[0]; return f ? PIC(f.seed, 320, 240) : ''; };
+const fmtDate = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + '  ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB';
+const fmtDur = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+const USERS = [
+  { id: 'u1', name: 'Alex Morgan', login: 'alex', role: 'admin', perms: {} },
+  { id: 'u2', name: 'Sam Rivera', login: 'sam', role: 'member', perms: { travel: 'read', iceland: 'read', lisbon: 'read', family: 'write', bday: 'write', summer: 'write', roll: 'read' } },
+  { id: 'u3', name: 'Ruth Morgan', login: 'ruth', role: 'member', perms: { family: 'read', bday: 'read', summer: 'read' } },
+  { id: 'u4', name: 'Jamie Chen', login: 'jamie', role: 'member', perms: { drone: 'write' } },
+];
+const AV = ['#005fb8', '#8a5a00', '#2f7d32', '#a4373a', '#5c2e91', '#00737a'];
+const SEG = (opts, cur, set) => opts.map(([k, label]) => ({ label, bg: cur === k ? '#fff' : 'transparent', shadow: cur === k ? '0 1px 2px rgba(0,0,0,.12)' : 'none', color: cur === k ? '#005fb8' : '#3a3e46', weight: cur === k ? 600 : 400, onClick: () => set(k) }));
+const initials = n => n.split(/\s+/).filter(Boolean).map(w => w[0]).join('').slice(0, 2).toUpperCase() || '?';
+const VIEWS = [{ key: 'large', label: 'Large icons', min: 210 }, { key: 'medium', label: 'Medium icons', min: 140 }, { key: 'details', label: 'Details' }];
+const SORTS = [{ key: 'name', label: 'Name' }, { key: 'date', label: 'Date taken' }, { key: 'type', label: 'Type' }, { key: 'size', label: 'Size' }, { key: 'dims', label: 'Dimensions' }];
+
+class Component extends DCLogic {
+  state = {
+    cur: 'iceland', back: [], fwd: [], expanded: { root: true, travel: true, family: true },
+    view: null, sel: {}, query: '', sort: 'name', dir: 1,
+    modal: false, cfg: { dur: null, trans: 'fade', shuffle: false, loop: true, videos: true, sub: false, scope: 'folder' },
+    ss: null,
+    menu: false, settings: false, setTab: 'general', users: USERS, selUser: 'u2', libPath: '/srv/media', scanned: null,
+  };
+  componentDidMount() {
+    this.onResize = () => { const w = window.innerWidth >= 1100; if (w !== this.state.wide) this.setState({ wide: w }); };
+    this.onResize(); window.addEventListener('resize', this.onResize);
+    this.onKey = e => {
+      if (this.state.ss) {
+        if (e.key === 'ArrowRight') this.step(1);
+        else if (e.key === 'ArrowLeft') this.step(-1);
+        else if (e.key === ' ') { e.preventDefault(); this.togglePlay(); }
+        else if (e.key === 'Escape') this.closeShow();
+      } else if (this.state.modal && e.key === 'Escape') this.setState({ modal: false });
+    };
+    window.addEventListener('keydown', this.onKey);
+  }
+  componentWillUnmount() { window.removeEventListener('resize', this.onResize); window.removeEventListener('keydown', this.onKey); clearTimeout(this.timer); }
+  me() { return this.state.users.find(u => u.id === (this.props.signedInAs === 'Sam (member)' ? 'u2' : 'u1')) || this.state.users[0]; }
+  permOf(u, fid) { return u.role === 'admin' || fid === 'root' ? 'write' : (u.perms[fid] || 'none'); }
+  canRead(fid) { return this.permOf(this.me(), fid) !== 'none'; }
+  curNode() { return this.canRead(this.state.cur) ? MAP[this.state.cur] : TREE; }
+  updUser(uid, patch) { this.setState(s => ({ users: s.users.map(u => u.id === uid ? { ...u, ...patch } : u) })); }
+  setPerm(uid, fid, val) {
+    this.setState(s => ({ users: s.users.map(u => {
+      if (u.id !== uid) return u;
+      const p = { ...u.perms };
+      const down = n => { p[n.id] = val; n.children.forEach(down); };
+      down(MAP[fid]);
+      if (val !== 'none') for (let a = MAP[fid].parent; a && a.id !== 'root'; a = a.parent) if ((p[a.id] || 'none') === 'none') p[a.id] = 'read';
+      return { ...u, perms: p };
+    }) }));
+  }
+  settingsVals() {
+    const st = this.state, me = this.me(), admin = me.role === 'admin';
+    const tab = admin ? st.setTab : 'general';
+    const su = st.users.find(u => u.id === st.selUser) || st.users[0];
+    const col = u => AV[Math.max(0, st.users.indexOf(u)) % AV.length];
+    const rows = [];
+    const walk = (n, d) => n.children.forEach(c => {
+      const v = this.permOf(su, c.id);
+      rows.push({ name: c.name, pad: 8 + d * 22, iconOpacity: v === 'none' ? .4 : 1, textColor: v === 'none' ? '#8a8f99' : '#1b1b1f', opts: SEG([['none', 'None'], ['read', 'Read'], ['write', 'Write']], v, k => this.setPerm(su.id, c.id, k)) });
+      walk(c, d + 1);
+    });
+    walk(TREE, 0);
+    return {
+      menuOpen: st.menu, toggleMenu: () => this.setState(s => ({ menu: !s.menu })), closeMenu: () => this.setState({ menu: false }),
+      menuBtnBg: st.menu ? '#dfe4ec' : 'transparent',
+      menuItems: [['general', 'Settings'], ...(admin ? [['users', 'Users & access']] : []), ['signout', 'Sign out']].map(([k, label]) => ({ label, onClick: () => this.setState(k === 'signout' ? { menu: false } : { menu: false, settings: true, setTab: k }) })),
+      settingsOpen: st.settings, openSettings: () => this.setState({ settings: true }), closeSettings: () => this.setState({ settings: false }),
+      meName: me.name, meRole: admin ? 'Administrator' : 'Member', meInitials: initials(me.name), meColor: col(me),
+      isAdmin: admin, notAdmin: !admin,
+      setTabs: [['general', 'General'], ...(admin ? [['users', 'Users & access']] : [])].map(([k, l]) => ({ label: l, bg: tab === k ? '#fff' : 'transparent', weight: tab === k ? 600 : 400, bar: tab === k ? 1 : 0, onClick: () => this.setState({ setTab: k }) })),
+      tabTitle: tab === 'users' ? 'Users & access' : 'General', tabGeneral: tab === 'general', tabUsers: tab === 'users',
+      libPath: st.libPath, onLibPath: e => this.setState({ libPath: e.target.value }),
+      scanText: st.scanned ? `Last scan: just now · ${allFiles(TREE).length} files found` : 'Last scan: today at 06:00',
+      rescan: () => this.setState({ scanned: Date.now() }),
+      defViewOpts: SEG(VIEWS.map(v => [v.key, v.label]), this.view(), k => this.setState({ view: k })),
+      durShort: `${this.dur()} s`,
+      userCount: `${st.users.length} users`,
+      addUser: () => { const id = 'u' + Date.now(); this.setState(s => ({ users: [...s.users, { id, name: 'New user', login: 'newuser', role: 'member', perms: {} }], selUser: id })); },
+      userList: st.users.map(u => ({ name: u.name, sub: (u.role === 'admin' ? 'Administrator' : 'Member') + (u.id === me.id ? ' · You' : ''), initials: initials(u.name), color: col(u), bg: u.id === su.id ? '#e5eef8' : 'transparent', onClick: () => this.setState({ selUser: u.id }) })),
+      suName: su.name, suLogin: su.login, suInitials: initials(su.name), suColor: col(su),
+      onSuName: e => this.updUser(su.id, { name: e.target.value }), onSuLogin: e => this.updUser(su.id, { login: e.target.value.replace(/\s/g, '').toLowerCase() }),
+      roleEditable: su.id !== me.id, roleLocked: su.id === me.id,
+      roleOpts: SEG([['admin', 'Administrator'], ['member', 'Member']], su.role, k => this.updUser(su.id, { role: k })),
+      canRemove: su.id !== me.id,
+      removeUser: () => this.setState(s => { const users = s.users.filter(u => u.id !== su.id); return { users, selUser: (users.find(u => u.id !== me.id) || users[0]).id }; }),
+      suIsAdmin: su.role === 'admin', suIsMember: su.role !== 'admin', permRows: rows,
+      readOnly: !admin && this.permOf(me, this.curNode().id) === 'read',
+    };
+  }
+  dur() { return this.state.cfg.dur ?? this.props.slideSeconds ?? 5; }
+  view() { return this.state.view ?? ({ 'Large icons': 'large', 'Medium icons': 'medium', 'Details': 'details' }[this.props.defaultView] || 'large'); }
+  navigate(id, push = true) {
+    if (id === this.state.cur) return;
+    this.setState(s => {
+      const exp = { ...s.expanded }; let p = MAP[id].parent; while (p) { exp[p.id] = true; p = p.parent; }
+      return { cur: id, sel: {}, query: '', expanded: exp, back: push ? [...s.back, s.cur] : s.back, fwd: push ? [] : s.fwd };
+    });
+  }
+  goBack = () => { const b = this.state.back; if (!b.length) return; const id = b[b.length - 1]; this.setState(s => ({ cur: id, back: s.back.slice(0, -1), fwd: [s.cur, ...s.fwd], sel: {}, query: '' })); };
+  goForward = () => { const f = this.state.fwd; if (!f.length) return; this.setState(s => ({ cur: f[0], fwd: s.fwd.slice(1), back: [...s.back, s.cur], sel: {}, query: '' })); };
+  goUp = () => { const p = MAP[this.state.cur].parent; if (p) this.navigate(p.id); };
+  rawItems() {
+    const node = this.curNode(), q = this.state.query.trim().toLowerCase();
+    const { sort, dir } = this.state;
+    const folders = node.children.filter(c => this.canRead(c.id)).map(c => ({ ...c, isFolder: true, date: allFiles(c).reduce((m, f) => f.date > m ? f.date : m, new Date(0)), size: allFiles(c).reduce((a, f) => a + f.size, 0), type: 'File folder', dims: '' }));
+    const cmp = (a, b) => {
+      const va = a[sort], vb = b[sort];
+      const r = va instanceof Date ? va - vb : typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb), undefined, { numeric: true });
+      return r * dir;
+    };
+    const f = x => !q || x.name.toLowerCase().includes(q);
+    return [...folders.filter(f).sort(cmp), ...node.files.filter(f).sort(cmp)];
+  }
+  togglePlay = () => this.setState(s => ({ ss: { ...s.ss, playing: !s.ss.playing, run: s.ss.run + 1 } }), () => this.schedule());
+  step(d, auto) {
+    const ss = this.state.ss; if (!ss) return;
+    let i = ss.idx + d;
+    if (i >= ss.items.length) { if (!this.state.cfg.loop && auto) return this.setState({ ss: { ...ss, playing: false } }); i = 0; }
+    if (i < 0) i = ss.items.length - 1;
+    this.setState({ ss: { ...ss, idx: i, run: ss.run + 1 } }, () => this.schedule());
+  }
+  schedule() {
+    clearTimeout(this.timer);
+    const ss = this.state.ss;
+    if (ss && ss.playing) this.timer = setTimeout(() => this.step(1, true), this.dur() * 1000);
+  }
+  closeShow = () => { clearTimeout(this.timer); this.setState({ ss: null }); };
+  openShow(items, idx, playing) {
+    if (!items.length) return;
+    this.setState({ modal: false, ss: { items, idx, playing, run: 0 } }, () => this.schedule());
+  }
+  startShow = () => {
+    const { cfg, sel } = this.state, node = this.curNode();
+    let items = cfg.scope === 'selected' && Object.keys(sel).length
+      ? allFiles(node).filter(f => sel[f.id]).concat(node.children.filter(c => sel[c.id]).flatMap(allFiles))
+      : cfg.sub ? allFiles(node) : node.files;
+    if (!cfg.videos) items = items.filter(f => !f.video);
+    if (cfg.shuffle) items = [...items].sort(() => Math.random() - .5);
+    this.openShow(items, 0, true);
+  };
+  setCfg(p) { this.setState(s => ({ cfg: { ...s.cfg, ...p } })); }
+
+  renderVals() {
+    const st = this.state, node = this.curNode(), view = this.view();
+    const tree = [];
+    const walk = (n, depth) => {
+      const vis = n.children.filter(c => this.canRead(c.id)); const active = n.id === node.id, open = !!st.expanded[n.id], kids = vis.length > 0;
+      tree.push({
+        name: n.name, pad: 4 + depth * 14, count: allFiles(n).length || '',
+        bg: active ? '#dde6f2' : 'transparent', weight: active ? 600 : 400, barOpacity: active ? 1 : 0,
+        chevOpacity: kids ? 1 : 0, rot: open ? 90 : 0,
+        onOpen: () => this.navigate(n.id),
+        onToggle: e => { e.stopPropagation(); if (kids) this.setState(s => ({ expanded: { ...s.expanded, [n.id]: !s.expanded[n.id] } })); },
+      });
+      if (open) vis.forEach(c => walk(c, depth + 1));
+    };
+    walk(TREE, 0);
+
+    const crumbs = []; for (let p = node; p; p = p.parent) crumbs.unshift({ name: p.name, onClick: (id => () => this.navigate(id))(p.id) });
+
+    const raw = this.rawItems();
+    const fileList = raw.filter(x => !x.isFolder);
+    const big = view === 'large';
+    const items = raw.map(x => {
+      const on = !!st.sel[x.id];
+      return {
+        name: x.name, isFolder: !!x.isFolder, isFile: !x.isFolder, video: !!x.video,
+        thumb: x.isFolder ? '' : PIC(x.seed, big ? 480 : 320, big ? 360 : 240), cover: x.isFolder ? coverOf(x) : '',
+        durText: x.video ? fmtDur(x.dur) : '',
+        dateText: x.isFolder ? (x.date.getTime() ? fmtDate(x.date) : '') : fmtDate(x.date),
+        type: x.type, sizeText: x.isFolder ? `${allFiles(x).length} items` : fmtSize(x.size), dims: x.dims,
+        bg: on ? '#cce4f7' : 'transparent', ring: on ? 'inset 0 0 0 1px #99c9ef' : 'none',
+        onClick: e => {
+          e.stopPropagation();
+          const multi = e.ctrlKey || e.metaKey;
+          this.setState(s => ({ sel: multi ? { ...s.sel, [x.id]: !s.sel[x.id] } : { [x.id]: true } }));
+        },
+        onOpen: () => x.isFolder ? this.navigate(x.id) : this.openShow(fileList, fileList.indexOf(x), false),
+      };
+    });
+
+    const selIds = Object.keys(st.sel).filter(k => st.sel[k]);
+    const selSize = raw.filter(x => st.sel[x.id] && !x.isFolder).reduce((a, x) => a + x.size, 0);
+    const nPhotos = node.files.filter(f => !f.video).length, nVideos = node.files.length - nPhotos;
+
+    const seg = (opts, cur, set) => opts.map(([k, label]) => ({ label, bg: cur === k ? '#fff' : 'transparent', shadow: cur === k ? '0 1px 2px rgba(0,0,0,.12)' : 'none', onClick: () => set(k) }));
+    const tg = (key, label) => { const on = st.cfg[key]; return { label, track: on ? '#005fb8' : 'transparent', border: on ? '#005fb8' : '#8a8f99', knob: on ? 23 : 3, knobBg: on ? '#fff' : '#5c616b', onClick: () => this.setCfg({ [key]: !on }) }; };
+
+    const pool = (() => {
+      const c = st.cfg;
+      let it = c.scope === 'selected' && selIds.length ? raw.filter(x => st.sel[x.id]).flatMap(x => x.isFolder ? allFiles(x) : [x]) : c.sub ? allFiles(node) : node.files;
+      if (!c.videos) it = it.filter(f => !f.video);
+      return it.length;
+    })();
+
+    const ss = st.ss, cur = ss && ss.items[ss.idx];
+    let stage = null, progress = null;
+    if (cur) {
+      const anim = { fade: 'ssFade .6s ease', slide: 'ssSlide .45s cubic-bezier(.2,.7,.2,1)', none: 'none' }[st.cfg.trans];
+      const h = React.createElement;
+      stage = h('div', { key: cur.id + ss.idx, style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 72px', animation: anim } },
+        h('img', { src: PIC(cur.seed, 1600, 1200), alt: '', style: { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block', borderRadius: 2 } }),
+        cur.video && h('div', { style: { position: 'absolute', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 } },
+          h('div', { style: { width: 72, height: 72, borderRadius: '50%', background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' } },
+            h('svg', { width: 26, height: 26, viewBox: '0 0 16 16' }, h('path', { d: 'M5 3v10l8-5z', fill: '#fff' }))),
+          h('div', { style: { padding: '2px 8px', borderRadius: 4, background: 'rgba(0,0,0,.6)', fontSize: 12 } }, 'Video · ' + fmtDur(cur.dur))));
+      progress = h('div', { key: ss.run, style: { height: '100%', background: '#4ca0ff', width: ss.playing ? undefined : `${((ss.idx + 1) / ss.items.length) * 100}%`, animation: ss.playing ? `ssProg ${this.dur()}s linear forwards` : 'none' } });
+    }
+
+    return {
+      ...this.settingsVals(),
+      backOpacity: st.back.length ? 1 : .35, fwdOpacity: st.fwd.length ? 1 : .35, upOpacity: node.parent ? 1 : .35,
+      goBack: this.goBack, goForward: this.goForward, goUp: this.goUp,
+      crumbs, tree,
+      query: st.query, onQuery: e => this.setState({ query: e.target.value }), searchPlaceholder: `Search ${node.name}`,
+      openModal: () => this.setState(s => ({ modal: true, cfg: { ...s.cfg, scope: selIds.length > 1 ? 'selected' : 'folder', sub: s.cfg.sub || !node.files.length } })),
+      sortLabel: `Sort: ${SORTS.find(s => s.key === st.sort).label} ${st.dir > 0 ? '↑' : '↓'}`,
+      cycleSort: () => this.setState(s => { const i = SORTS.findIndex(x => x.key === s.sort); const order = ['name', 'date', 'size']; return { sort: order[(order.indexOf(s.sort) + 1) % 3], dir: 1 }; }),
+      selectLabel: selIds.length ? 'Select none' : 'Select all',
+      selectAll: () => this.setState({ sel: selIds.length ? {} : Object.fromEntries(raw.map(x => [x.id, true])) }),
+      views: VIEWS.map(v => ({ label: v.label, isLarge: v.key === 'large', isMedium: v.key === 'medium', isDetails: v.key === 'details', bg: view === v.key ? '#fff' : 'transparent', shadow: view === v.key ? '0 1px 2px rgba(0,0,0,.12)' : 'none', showLabel: this.state.wide, onClick: () => this.setState({ view: v.key }) })),
+      clearSel: () => selIds.length && this.setState({ sel: {} }),
+      isTiles: view !== 'details' && items.length > 0, isDetails: view === 'details' && items.length > 0,
+      isEmpty: items.length === 0, emptyText: st.query ? `No items match “${st.query}”.` : 'This folder is empty.',
+      tileMin: VIEWS.find(v => v.key === view).min || 140,
+      items,
+      cols: SORTS.map(s => ({ label: s.label, arrow: st.sort === s.key ? (st.dir > 0 ? '▲' : '▼') : '', onClick: () => this.setState(p => ({ sort: s.key, dir: p.sort === s.key ? -p.dir : 1 })) })),
+      statusCount: `${raw.length} items` + (node.files.length ? `  ·  ${nPhotos} photos, ${nVideos} videos` : ''),
+      statusSel: selIds.length ? `${selIds.length} selected` + (selSize ? `  ·  ${fmtSize(selSize)}` : '') : '',
+
+      modalOpen: st.modal, closeModal: () => this.setState({ modal: false }), stop: e => e.stopPropagation(),
+      modalSub: `${node.name} · ${pool} ${pool === 1 ? 'item' : 'items'}`,
+      cfgDur: this.dur(), durText: `${this.dur()} seconds`, onDur: e => this.setCfg({ dur: +e.target.value }),
+      hasSelection: selIds.length > 0,
+      scopeOpts: seg([['folder', 'Whole folder'], ['selected', `Selected (${selIds.length})`]], st.cfg.scope, k => this.setCfg({ scope: k })),
+      transOpts: seg([['fade', 'Fade'], ['slide', 'Slide'], ['none', 'None']], st.cfg.trans, k => this.setCfg({ trans: k })),
+      toggles: [tg('shuffle', 'Shuffle'), tg('loop', 'Loop'), tg('videos', 'Include videos'), tg('sub', 'Include subfolders')],
+      startShow: this.startShow, startOpacity: pool ? 1 : .4, startLabel: 'Start',
+
+      ssOpen: !!cur, stage, progress,
+      ssName: cur ? cur.name : '', ssMeta: cur ? `${fmtDate(cur.date)} · ${cur.dims}` : '',
+      ssCounter: ss ? `${ss.idx + 1} / ${ss.items.length}` : '',
+      ssPlaying: !!(ss && ss.playing), ssPaused: !!(ss && !ss.playing),
+      prev: () => this.step(-1), next: () => this.step(1), togglePlay: this.togglePlay, closeShow: this.closeShow,
+    };
+  }
+}
+</script>
+</body>
+</html>
