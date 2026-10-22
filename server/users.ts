@@ -3,6 +3,7 @@ import type { AdminUser, Me, Prefs, Role, ViewMode } from '../shared/types.ts';
 import { hashPassword, revokeUserSessions, touchSession } from './auth.ts';   // auth.ts imports getMe back; each only calls the other inside functions, so the cycle is safe
 import type { DB } from './db.ts';
 import { HttpError, str } from './http.ts';
+import { log } from './log.ts';
 
 const isView = (v: unknown): v is ViewMode => v === 'large' || v === 'medium' || v === 'details';
 const isSeconds = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 2 && v <= 20;
@@ -150,10 +151,15 @@ export function updateUser(db: DB, actor: Me, id: number, patch: UserPatch): Adm
 
 // Deleting the row takes the user's sessions, shares and upload records with it (ON DELETE CASCADE). The row goes first, so access ends
 // even when a temp file can't be removed; then the temp files of their unfinished uploads, which nothing else would ever clean up.
+// By then the user is gone, so a temp file that stays (a read-only folder, a fault of the disk) is no failure of the removal: the caller must
+// still answer 200 and write its audit line. Each file that stays is logged as an error, with its path, for the owner to remove by hand.
 export async function removeUser(db: DB, actor: Me, id: number): Promise<void> {
   requireStillAdmin(db, actor);
   if (id === actor.id) throw new HttpError(403, "You can't remove yourself");
   const temps = (db.prepare('select temp_abs from uploads where user_id = ?').all(id) as { temp_abs: string }[]).map((r) => r.temp_abs);
   if (db.prepare('delete from users where id = ?').run(id).changes === 0) throw new HttpError(404, 'Not found');
-  await Promise.all(temps.map((path) => rm(path, { force: true })));
+  const removals = await Promise.allSettled(temps.map((path) => rm(path, { force: true })));
+  for (const done of removals) {
+    if (done.status === 'rejected') log('error', { message: `Could not remove an upload temp file of removed user ${id}: ${done.reason instanceof Error ? done.reason.message : String(done.reason)}` });
+  }
 }

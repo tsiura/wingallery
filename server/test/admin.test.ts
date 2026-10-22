@@ -1,14 +1,15 @@
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { lstat, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { chmod, lstat, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { createSession, touchSession } from '../auth.ts';
 import { openDb } from '../db.ts';
 import { rewriteSharePaths } from '../shares.ts';
 import { createUser, getMe, listUsers, removeUser, setPassword, updateUser } from '../users.ts';
 import { locate } from '../vpath.ts';
 import { fixture, seedTree, startTestApp, tempDir } from './helpers.ts';
+import type { TestApp } from './helpers.ts';
 
 // pics/family, pics/test1, pics/.hidden, other, a file pics/x.jpg and a symlink pics/link -> family
 const TREE = ['pics/family/', 'pics/test1/', 'pics/.hidden/', 'other/', 'pics/x.jpg'];
@@ -29,6 +30,11 @@ function capture(t: TestContext) {
 }
 
 const exists = (path: string) => stat(path).then(() => true, () => false);
+
+// The record of an unfinished upload by `user`, whose temp file is `temp` (below the media folder; the file itself is not made here).
+const addUpload = (ta: TestApp, id: string, user: number, temp: string) =>
+  ta.db.prepare('insert into uploads (id, user_id, dir_abs, temp_abs, name, size, received, updated_at) values (?, ?, ?, ?, ?, 10, 5, 0)')
+    .run(id, user, join(ta.media, dirname(temp)), join(ta.media, temp), 'a.jpg');
 
 test('admin endpoints are admin-only', async (t) => {
   const ta = await startTestApp(); t.after(() => ta.close()); await ta.admin();
@@ -161,9 +167,7 @@ test('removing a user takes their sessions, shares and upload temp files with th
   const ta = await startTestApp(); t.after(() => ta.close()); const a = await ta.admin();
   const { id: papa, client } = await ta.addUser('papa', 'member'); const { id: mama } = await ta.addUser('mama', 'member');
   await seedTree(ta.media, ['pics/', 'pics/.upload-p1', 'pics/.upload-m1']);
-  const upload = (id: string, user: number, temp: string) => ta.db.prepare('insert into uploads (id, user_id, dir_abs, temp_abs, name, size, received, updated_at) values (?, ?, ?, ?, ?, 10, 5, 0)')
-    .run(id, user, join(ta.media, 'pics'), join(ta.media, temp), 'a.jpg');
-  upload('p1', papa, 'pics/.upload-p1'); upload('p2', papa, 'pics/.upload-gone'); upload('m1', mama, 'pics/.upload-m1');   // p2's file is not there any more
+  addUpload(ta, 'p1', papa, 'pics/.upload-p1'); addUpload(ta, 'p2', papa, 'pics/.upload-gone'); addUpload(ta, 'm1', mama, 'pics/.upload-m1');   // p2's file is not there any more
   for (const user of [papa, mama]) await a.json('POST', `/api/admin/users/${user}/shares`, { relPath: 'pics', alias: 'Pics', ...NO_RIGHTS });
   assert.equal((await a.json('DELETE', `/api/admin/users/${papa}`)).status, 200);
   assert.equal(await exists(join(ta.media, 'pics/.upload-p1')), false);
@@ -173,6 +177,28 @@ test('removing a user takes their sessions, shares and upload temp files with th
   assert.deepEqual([owners('shares'), owners('uploads')], [[mama], [mama]]);
   assert.equal(ta.db.prepare('select count(*) n from sessions where user_id = ?').get(papa)!.n, 0);
   assert.deepEqual(await a.json('DELETE', `/api/admin/users/${papa}`), NOT_FOUND);
+});
+test('a temp file that cannot be removed neither fails the removal of a user nor hides it from the audit log', { skip: process.getuid?.() === 0 }, async (t) => {
+  const events = capture(t);
+  const ta = await startTestApp(); t.after(() => ta.close()); const a = await ta.admin();
+  const { id, client } = await ta.addUser('papa', 'member');
+  await seedTree(ta.media, ['ro/.upload-1', 'ro/.upload-2', 'rw/.upload-3']);
+  addUpload(ta, 'u1', id, 'ro/.upload-1'); addUpload(ta, 'u2', id, 'ro/.upload-2'); addUpload(ta, 'u3', id, 'rw/.upload-3');
+  const ro = join(ta.media, 'ro');
+  await chmod(ro, 0o555);              // a file in a folder that can't be written can't be unlinked, as on a read-only mount
+  t.after(() => chmod(ro, 0o755));     // so that the temp folder can be removed again
+  // the user is gone the moment the row is deleted, so the answer is 200 whatever happens to the files
+  assert.deepEqual(await a.json('DELETE', `/api/admin/users/${id}`), { status: 200, body: { ok: true } });
+  assert.deepEqual(listUsers(ta.db).map((u) => u.username), ['root']);
+  assert.equal((await client.json('GET', '/api/session')).body.user, null);
+  assert.deepEqual([await exists(join(ro, '.upload-1')), await exists(join(ro, '.upload-2')), await exists(join(ta.media, 'rw/.upload-3'))], [true, true, false]);   // one failure doesn't stop the others
+  const all = events();
+  assert.deepEqual(all.filter((e) => e.event === 'user_removed'), [{ event: 'user_removed', id, username: 'papa', by: 'root', ip: '127.0.0.1' }]);
+  // one error line for each file that stayed, with its path so that the owner can remove it by hand, and none for the file that went
+  const errors = all.filter((e) => e.event === 'error').map((e) => String(e.message));
+  assert.equal(errors.length, 2, errors.join('\n'));
+  for (const name of ['.upload-1', '.upload-2']) assert.ok(errors.some((m) => m.includes(join(ro, name))), `no error line names ${name}`);
+  assert.ok(errors.every((m) => m.includes(`removed user ${id}`)), errors.join('\n'));
 });
 test('an administrator who was demoted or removed while their request was waiting can no longer demote or remove anyone', async () => {
   const db = openDb(':memory:');
