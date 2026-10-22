@@ -1,12 +1,13 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import { LoginLimiter, SESSION_COOKIE, sessionCookie, touchSession } from './auth.ts';
 import type { Config } from './config.ts';
 import type { DB } from './db.ts';
-import { HttpError, Router, clientInfo, securityHeaders, sendJson } from './http.ts';
+import { HttpError, Router, clientInfo, parseCookies, securityHeaders, sendJson } from './http.ts';
 import type { Ctx } from './http.ts';
 import { log } from './log.ts';
 
-export interface App { cfg: Config; db: DB; router: Router; server: Server; close(): Promise<void> }
+export interface App { cfg: Config; db: DB; router: Router; limiter: LoginLimiter; server: Server; close(): Promise<void> }
 
 function fail(res: ServerResponse, err: unknown): void {
   const known = err instanceof HttpError;
@@ -24,6 +25,7 @@ function fail(res: ServerResponse, err: unknown): void {
 // Does not listen. close() also closes the database it was given.
 export function createApp(cfg: Config, db: DB): App {
   const router = new Router();
+  const limiter = new LoginLimiter();
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
@@ -41,6 +43,19 @@ export function createApp(cfg: Config, db: DB): App {
         return;
       }
 
+      // CSRF: anything but a read must say it comes from this very site, so a request without an Origin is refused too.
+      // ctx.origin is built from the forwarded headers only when the socket is a trusted proxy (clientInfo).
+      if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers.origin !== ctx.origin)
+        throw new HttpError(403, "Request origin doesn't match this site. If you use a reverse proxy, check TRUSTED_PROXIES.");
+
+      const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+      const session = token ? touchSession(db, token) : null;
+      if (token && session) {
+        ctx.user = session.user;
+        ctx.token = token;
+        if (session.refreshed) res.setHeader('Set-Cookie', sessionCookie(token, true, cfg.cookieSecure));   // keeps the 30 days sliding
+      }
+
       const found = router.match(req.method ?? 'GET', url.pathname);
       if (found === null) throw new HttpError(404, 'Not found');
       if (found === 'method') throw new HttpError(405, 'Method not allowed');
@@ -55,7 +70,7 @@ export function createApp(cfg: Config, db: DB): App {
   const server = createServer((req, res) => { void handle(req, res); });
   let closing: Promise<void> | undefined;
   return {
-    cfg, db, router, server,
+    cfg, db, router, limiter, server,
     close: () => closing ??= new Promise<void>((resolve) => {
       // stops accepting and drops idle keep-alive sockets; requests in flight finish first
       server.close(() => { db.close(); resolve(); });
