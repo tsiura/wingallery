@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node --disable-warning=ExperimentalWarning --test",
     "typecheck": "tsc --noEmit",
-    "start": "node --disable-warning=ExperimentalWarning server/main.ts"
+    "start": "node --disable-warning=ExperimentalWarning server/main.ts",
+    "test:docker": "docker build --target test -t home-gallery-test . && docker run --rm -u \"$(id -u):$(id -g)\" -v \"$PWD:/app\" -w /app home-gallery-test node --disable-warning=ExperimentalWarning --test"
   },
   "keywords": [],
   "author": "",

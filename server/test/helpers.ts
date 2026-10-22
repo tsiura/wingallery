@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { mkdtemp, realpath } from 'node:fs/promises';
 import { BlockList } from 'node:net';
@@ -18,6 +19,16 @@ export async function tempDir(): Promise<string> {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'hg-')));
   dirs.push(dir);
   return dir;
+}
+
+// True when `cmd` can be started from PATH, so a test of an external tool (libvips, ffmpeg) can skip itself.
+export function hasCommand(cmd: string): boolean {
+  return spawnSync(cmd, ['-version'], { stdio: 'ignore' }).error === undefined;
+}
+
+// Absolute path of a file in server/test/fixtures.
+export function fixture(name: string): string {
+  return join(import.meta.dirname, 'fixtures', name);
 }
 
 export function testConfig(over: Partial<Config> & { mediaRoot: string; dataDir: string }): Config {
