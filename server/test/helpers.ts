@@ -85,6 +85,11 @@ function makeClient(url: string, cookie: string | null): Client {
   return client;
 }
 
+// Signing in is set-up in the helpers, so the server's `login` audit line is kept out of the test output (a test that wants audit lines mocks console.log itself).
+// The first login in flight takes console.log away and the last one to finish gives it back, so logins that overlap, in one app or in several, restore it once.
+// ponytail: this swaps the global console.log; give log() a sink of its own if a test ever needs these lines.
+let signingIn = 0, printed = console.log;
+
 // Listens on 127.0.0.1, port 0. Fresh media and data dirs unless `over` names them.
 export async function startTestApp(over: Partial<Config> = {}): Promise<TestApp> {
   const mediaRoot = over.mediaRoot ?? await tempDir();
@@ -94,17 +99,14 @@ export async function startTestApp(over: Partial<Config> = {}): Promise<TestApp>
   const app = createApp(cfg, db);
   await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
-  // Signing in is set-up here, so the server's `login` audit line is kept out of the test output (a test that wants audit lines mocks console.log itself).
-  // ponytail: this swaps the global console.log for the length of one request; give log() a sink of its own if a test ever needs these lines.
   async function login(username: string, password: string): Promise<Client> {
-    const print = console.log;
-    console.log = () => {};
+    if (signingIn++ === 0) { printed = console.log; console.log = () => {}; }
     try {
       const r = await makeClient(url, null).req('POST', '/api/login', { username, password, remember: true });
       if (r.status !== 200) throw new Error(`login as ${username} was refused: ${r.status} ${await r.text()}`);
       return makeClient(url, r.headers.getSetCookie()[0].split(';')[0]);
     } finally {
-      console.log = print;
+      if (--signingIn === 0) console.log = printed;
     }
   }
   async function addUser(username: string, role: Role, password = 'password123') {

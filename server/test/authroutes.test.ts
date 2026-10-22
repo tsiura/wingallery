@@ -1,13 +1,15 @@
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHook } from 'node:async_hooks';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { createApp } from '../app.ts';
-import { clearSessionCookie, createSession, touchSession, verifyPassword } from '../auth.ts';
+import { clearSessionCookie, createSession, hashPassword, revokeUserSessions, touchSession, verifyPassword } from '../auth.ts';
+import type { LoginLimiter } from '../auth.ts';
 import { runCli } from '../cli.ts';
 import { openDb } from '../db.ts';
 import type { DB } from '../db.ts';
@@ -29,6 +31,22 @@ function capture(t: TestContext) {
   t.mock.method(console, 'log', (s: unknown) => { lines.push(String(s)); });
   const events = () => lines.filter((l) => l.startsWith('{')).map((l) => { const { t: _time, ...event } = JSON.parse(l); return event; });
   return { lines, events };
+}
+
+// How many argon2 hashes a piece of work starts, counted as they start. A request's cost in hashes is exact, where its time is only a guess.
+function countHashes(t: TestContext) {
+  let started = 0;
+  const hook = createHook({ init: (_id, type) => { if (type === 'ARGON2REQUEST') started++; } }).enable();
+  t.after(() => { hook.disable(); });
+  return async (work: () => Promise<unknown>) => { const before = started; await work(); return started - before; };
+}
+
+// Runs `landing` at the start of the second limiter check of the next request. That check is the first thing after the password hash,
+// so this is a reset (or anything else) arriving while that request was hashing.
+function landAfterHash(limiter: LoginLimiter, landing: () => void) {
+  const check = limiter.check.bind(limiter);
+  let calls = 0;
+  limiter.check = (ip, username, now) => { if (++calls === 2) landing(); return check(ip, username, now); };
 }
 
 test('first-run setup', async (t) => {
@@ -221,27 +239,89 @@ test('login: the lock is per username and per address; a success clears the user
   assert.equal(await login('mama', 'password123', '198.51.100.9'), 429);               // an address that guessed too much is shut out for every name
   assert.equal(await login('mama', 'password123', '198.51.100.10'), 200);
 });
-test('a locked name is refused without hashing, and an unknown name costs as much as a wrong password', async (t) => {
+test('a locked name costs no hash, and an unknown name costs as much as a wrong password', async (t) => {
   const ta = await startTestApp(); t.after(() => ta.close()); quiet(t);
   const { client: mama } = await ta.addUser('mama', 'member');
   await ta.addUser('papa', 'member');
-  // A hash is 10 to 50 times the cost of a refusal, so a third is a safe line; the best of a few tries, taken side by side, so a busy machine doesn't decide.
-  const took = async (request: () => Promise<unknown>) => { const from = performance.now(); await request(); return performance.now() - from; };
+  const hashes = countHashes(t);
   const login = (username: string, password: string) => ta.client().json('POST', '/api/login', { username, password, remember: false });
-  const wrong: number[] = [], unknown: number[] = [];
-  for (let i = 0; i < 4; i++) {
-    wrong.push(await took(() => login('papa', 'bad-password' + i)));
-    unknown.push(await took(() => login('ghost' + i, 'bad-password')));
+  const change = (current: string, next = 'newpassword1') => mama.json('POST', '/api/me/password', { current, next });
+  assert.equal(await hashes(() => login('papa', 'bad-password')), 1);                    // a wrong password: one hash
+  assert.equal(await hashes(() => login('ghost', 'bad-password')), 1);                   // an unknown name: one as well, so the time does not tell them apart
+  assert.equal(await hashes(() => login('papa', 'password123')), 1);                     // and a right one
+  assert.equal(await hashes(() => change('password123', 'short')), 1);                   // a bad new password is refused before it is hashed: only the current one cost a hash
+  assert.equal(await hashes(() => ta.client().json('POST', '/api/login', { username: 'papa', password: 'x'.repeat(20_000) })), 0);   // a body that is too large costs none
+  for (let i = 0; i < 5; i++) await login('papa', 'bad-password');
+  assert.equal(await hashes(() => login('papa', 'password123')), 0);                     // locked: refused before any hash
+  for (let i = 0; i < 5; i++) await change('bad-password');
+  assert.equal(await hashes(() => change('password123')), 0);                            // the same for the password change
+});
+test('a password reset that lands while a login is hashing leaves no session behind', async (t) => {
+  const ta = await startTestApp(); t.after(() => ta.close()); quiet(t);
+  const papa = await createUser(ta.db, { username: 'papa', displayName: 'Papa', password: 'password123', role: 'member' });
+  const reset = await hashPassword('reset-by-admin');
+  // the last, synchronous step of setPassword: the new hash is stored and every session ends
+  landAfterHash(ta.app.limiter, () => { ta.db.prepare('update users set password_hash = ? where id = ?').run(reset, papa.id); revokeUserSessions(ta.db, papa.id); });
+  const old = await ta.client().json('POST', '/api/login', { username: 'papa', password: 'password123', remember: true });
+  assert.deepEqual(old, { status: 401, body: { error: 'Wrong username or password' } });   // the password it checked is not the password any more
+  assert.equal(sessionCount(ta.db), 0);
+  assert.equal((await (await ta.login('papa', 'reset-by-admin')).json('GET', '/api/session')).body.user.username, 'papa');
+});
+test('a set-password next to a login with the old password never leaves a live session', async (t) => {
+  const ta = await startTestApp(); t.after(() => ta.close()); quiet(t);
+  for (const username of ['aa', 'bb', 'cc', 'dd']) {
+    await createUser(ta.db, { username, displayName: username, password: 'password123', role: 'member' });
+    const cli = runCli(['set-password', username], ta.cfg, ta.db);                       // starts hashing the new password ...
+    const login = await ta.client().json('POST', '/api/login', { username, password: 'password123', remember: true });   // ... while the old one is checked
+    assert.equal(await cli, 0);
+    assert.equal(sessionCount(ta.db), 0, `${username}: the login answered ${login.status}`);   // whichever finished first, the reset has the last word
   }
-  const hashed = Math.min(...wrong);
-  assert.ok(Math.min(...unknown) > hashed / 3, `an unknown name took ${Math.min(...unknown)} ms, a wrong password ${hashed} ms: the first tells that the name does not exist`);
-  await login('papa', 'bad-password');                                                  // the fifth wrong password for papa
-  const refused: number[] = [], refusedChange: number[] = [];
-  for (let i = 0; i < 5; i++) refused.push(await took(() => login('papa', 'password123')));
-  assert.ok(Math.min(...refused) < hashed / 3, `a locked login took ${Math.min(...refused)} ms, a hashed one ${hashed} ms: a locked name must not cost a hash`);
-  for (let i = 0; i < 5; i++) await mama.json('POST', '/api/me/password', { current: 'bad-password' + i, next: 'newpassword1' });
-  for (let i = 0; i < 5; i++) refusedChange.push(await took(() => mama.json('POST', '/api/me/password', { current: 'password123', next: 'newpassword1' })));
-  assert.ok(Math.min(...refusedChange) < hashed / 3, `a locked password change took ${Math.min(...refusedChange)} ms, a hashed one ${hashed} ms`);
+});
+test('a reset that lands while a password change is hashing is not overwritten by it', async (t) => {
+  const ta = await startTestApp(); t.after(() => ta.close()); quiet(t);
+  const { id, client: mama } = await ta.addUser('mama', 'member');
+  const reset = await hashPassword('reset-by-admin');
+  landAfterHash(ta.app.limiter, () => { ta.db.prepare('update users set password_hash = ? where id = ?').run(reset, id); revokeUserSessions(ta.db, id); });
+  const change = await mama.json('POST', '/api/me/password', { current: 'password123', next: 'attacker-choice' });
+  assert.deepEqual(change, { status: 401, body: { error: 'Sign in required' } });       // the session it was made from ended with the reset
+  const hash = findLogin(ta.db, 'mama')!.passwordHash;
+  assert.equal(await verifyPassword('reset-by-admin', hash), true);
+  assert.equal(await verifyPassword('attacker-choice', hash), false);
+});
+test('setPassword refuses a change made from a session that ended while it hashed', async () => {
+  const db = openDb(':memory:');
+  const alice = await createUser(db, { username: 'alice', displayName: 'Alice', password: 'password123', role: 'member' });
+  const bob = await createUser(db, { username: 'bob', displayName: 'Bob', password: 'password123', role: 'member' });
+  const mine = createSession(db, alice.id, true, 'ip', 'ua'), his = createSession(db, bob.id, true, 'ip', 'ua');
+  const pending = setPassword(db, alice.id, 'newpassword1', mine);                       // the hash is running ...
+  revokeUserSessions(db, alice.id);                                                      // ... and the session it was made from ends
+  await assert.rejects(pending, { status: 401, message: 'Sign in required' });
+  for (const token of ['nonsense', his])                                                 // an unknown token, and someone else's session, are no session of Alice
+    await assert.rejects(setPassword(db, alice.id, 'newpassword1', token), { status: 401, message: 'Sign in required' }, token);
+  assert.equal(await verifyPassword('password123', findLogin(db, 'alice')!.passwordHash), true);   // nothing was stored
+  assert.ok(touchSession(db, his));                                                      // and the other user's session is untouched
+  const kept = createSession(db, alice.id, true, 'ip', 'ua');
+  await setPassword(db, alice.id, 'newpassword1', kept);                                 // a live session of hers is what the change needs
+  assert.ok(touchSession(db, kept));
+});
+test('password change: a right current password clears the username count, as a login does', async (t) => {
+  const ta = await startTestApp(); t.after(() => ta.close()); quiet(t);
+  const { client: a } = await ta.addUser('mama', 'member');
+  const change = (current: string, next: string) => a.json('POST', '/api/me/password', { current, next });
+  for (let i = 0; i < 4; i++) assert.equal((await change('wrong-' + i + '-pass', 'newpassword1')).status, 400);   // one more would lock the name
+  assert.equal((await change('password123', 'newpassword1')).status, 200);               // the right one clears the count ...
+  for (let i = 0; i < 4; i++) assert.equal((await change('wrong-' + i + '-pass', 'another-pass1')).status, 400);   // ... eight in all would have locked it by now
+  assert.equal((await ta.client().json('POST', '/api/login', { username: 'mama', password: 'newpassword1', remember: false })).status, 200);
+});
+test('TestApp.login: overlapping logins leave console.log as it was', async (t) => {
+  const ta = await startTestApp(); t.after(() => ta.close());
+  const before = console.log;
+  t.after(() => { console.log = before; });                                              // whatever happens here, the rest of the file keeps its console
+  for (const username of ['aa', 'bb', 'cc']) await createUser(ta.db, { username, displayName: username, password: 'password123', role: 'member' });
+  for (let round = 0; round < 4; round++) {
+    await Promise.all(['aa', 'bb', 'cc'].map((username) => ta.login(username, 'password123')));
+    assert.equal(console.log, before, `still replaced after round ${round}`);
+  }
 });
 
 test('logout ends only that session, is harmless without one, and is audited', async (t) => {
@@ -291,8 +371,8 @@ test('password change: needs a session, throttles wrong guesses, and only the ne
   const { client: a } = await ta.addUser('mama', 'member');
   assert.deepEqual(await ta.client().json('POST', '/api/me/password', { current: 'password123', next: 'newpassword1' }), { status: 401, body: { error: 'Sign in required' } });
   // a wrong type is a wrong value (G6)
-  assert.deepEqual(await a.json('POST', '/api/me/password', { current: 5, next: 'newpassword1' }), { status: 400, body: { error: 'Current password is wrong' } });
   assert.deepEqual(await a.json('POST', '/api/me/password', { current: 'password123', next: { x: 1 } }), { status: 400, body: { error: 'Password must be at least 8 characters' } });
+  assert.deepEqual(await a.json('POST', '/api/me/password', { current: 5, next: 'newpassword1' }), { status: 400, body: { error: 'Current password is wrong' } });   // the first of five wrong ones
   for (const text of ['null', '[]', '5']) {
     const r = await a.req('POST', '/api/me/password', text, JSON_TYPE);
     assert.deepEqual([r.status, await r.json()], [400, { error: 'Invalid JSON' }], text);

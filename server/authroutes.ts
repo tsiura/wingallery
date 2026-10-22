@@ -48,7 +48,10 @@ export function registerAuthRoutes(app: App): void {
     if (found) right = await verifyPassword(password, found.passwordHash);
     else await burnPasswordCheck(password);   // an unknown name costs as much time as a wrong password
     checkLimit(ctx, username);                // guesses made while this one was hashing may have locked the name; a right password doesn't get past that
-    const user = right && found ? getMe(db, found.id) : null;   // null as well when the account was removed meanwhile
+    // A reset ends every session. If the password was reset while this hash ran, the old one it just matched must not start a session that outlives the reset.
+    // ponytail: that is settled inside this process; the CLI is another one and could still land between this read and the insert in startSession (microseconds); make the insert conditional on the hash if that ever shows.
+    const current = right && found ? findLogin(db, username) : null;
+    const user = found && current?.id === found.id && current.passwordHash === found.passwordHash ? getMe(db, found.id) : null;   // null as well when the account was removed meanwhile
     if (!user) {
       limiter.fail(ctx.ip, username);
       log('login_failed', { username: username.slice(0, 64), ip: ctx.ip });
@@ -85,7 +88,7 @@ export function registerAuthRoutes(app: App): void {
     const me = requireUser(ctx);
     const body = await readObject(ctx);
     // Checking the current password is a password oracle for whoever holds the cookie (a stolen session, a screen left open),
-    // so it counts against the same lock as the login.
+    // so it counts against the same lock as the login, and a right one clears the count as a login does.
     checkLimit(ctx, me.username);
     const row = findLogin(db, me.username);
     const right = row !== null && await verifyPassword(str(body.current), row.passwordHash);
@@ -94,7 +97,8 @@ export function registerAuthRoutes(app: App): void {
       limiter.fail(ctx.ip, me.username);
       throw new HttpError(400, 'Current password is wrong');
     }
-    await setPassword(db, me.id, str(body.next), ctx.token);   // this session stays, every other one ends
+    limiter.succeed(me.username);
+    await setPassword(db, me.id, str(body.next), ctx.token);   // this session stays, every other one ends; if it ended meanwhile, nothing is stored
     log('password_set', { username: me.username, ip: ctx.ip });
     return { ok: true };
   });

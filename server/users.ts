@@ -1,5 +1,5 @@
 import type { Me, Prefs, Role, ViewMode } from '../shared/types.ts';
-import { hashPassword, revokeUserSessions } from './auth.ts';   // auth.ts imports getMe back; each only calls the other inside functions, so the cycle is safe
+import { hashPassword, revokeUserSessions, touchSession } from './auth.ts';   // auth.ts imports getMe back; each only calls the other inside functions, so the cycle is safe
 import type { DB } from './db.ts';
 import { HttpError, str } from './http.ts';
 
@@ -51,8 +51,11 @@ function checkedPassword(v: unknown): string {
 }
 
 // Stores the new hash and ends the user's sessions, except `keepToken` (the one a user changes their own password from).
+// That session has to be alive when the hash is done: if a reset or a sign-out ended it meanwhile, this change was started with a
+// password or a cookie that no longer counts, and it must not overwrite what ended it (401, nothing stored).
 export async function setPassword(db: DB, id: number, password: string, keepToken: string | null = null): Promise<void> {
   const hash = await hashPassword(checkedPassword(password));
+  if (keepToken !== null && touchSession(db, keepToken)?.user.id !== id) throw new HttpError(401, 'Sign in required');
   if (db.prepare('update users set password_hash = ? where id = ?').run(hash, id).changes === 0) throw new HttpError(404, 'Not found');
   revokeUserSessions(db, id, keepToken);
 }
