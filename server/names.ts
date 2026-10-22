@@ -6,8 +6,17 @@ const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' })
 
 export const naturalCompare = collator.compare;
 
+// The name without its trailing dots and spaces. A loop, not /[. ]+$/: that regex is quadratic on a long run of them (see trimPad).
+function stripTail(name: string): string {
+  let end = name.length;
+  while (end > 0 && (name[end - 1] === '.' || name[end - 1] === ' ')) end--;
+  return name.slice(0, end);
+}
+
+// Trailing dots and spaces don't count: Windows ignores them and vfat/exFAT drop trailing dots on lookup, so '$RECYCLE.BIN.' opens
+// '$RECYCLE.BIN' and realpath hands back the spelling it was given. FAT's 8.3 short names ('GALLER~1') are not matched: FAT32 is unsupported.
 export function isHiddenName(name: string): boolean {
-  return name.startsWith('.') || HIDDEN.has(name.toLowerCase());
+  return name.startsWith('.') || HIDDEN.has(stripTail(name).toLowerCase());
 }
 
 // Shared rules for names and aliases. The caller decides `tooLong`.

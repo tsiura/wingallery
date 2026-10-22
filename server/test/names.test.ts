@@ -8,6 +8,21 @@ test('hidden names', () => {
     assert.equal(isHiddenName(n), true, n);
   for (const n of ['IMG_1.jpg', 'Дача #2 (2024)']) assert.equal(isHiddenName(n), false, n);
 });
+// vfat and exFAT drop trailing dots when they look a name up (Windows drops spaces too), so '$RECYCLE.BIN.' opens '$RECYCLE.BIN'.
+test('hidden names ignore trailing dots and spaces', () => {
+  for (const n of ['$RECYCLE.BIN.', '@eaDir. ', 'Thumbs.db..', 'System Volume Information ', 'lost+found. .'])
+    assert.equal(isHiddenName(n), true, n);
+  // only dots and spaces are ignored: a hidden name plus any other character is another name
+  for (const n of ['IMG_1.jpg', 'Thumbs.db.bak', 'desktop.ini.txt', 'a. b', 'Дача #2 (2024).', 'Thumbs.db~', '@eaDirs', 'lost+found2', '#recycle_'])
+    assert.equal(isHiddenName(n), false, n);
+});
+test('isHiddenName stays linear on long runs of spaces and dots', () => {
+  const t = performance.now();
+  for (const n of [' '.repeat(100_000) + 'a', ' .'.repeat(50_000) + 'a', 'a' + ' '.repeat(100_000), 'a' + ' .'.repeat(50_000)])
+    assert.equal(isHiddenName(n), false);
+  for (const n of ['Thumbs.db' + ' '.repeat(100_000), '@eaDir' + ' .'.repeat(50_000)]) assert.equal(isHiddenName(n), true);
+  assert.ok(performance.now() - t < 500);
+});
 test('validateName', () => {
   assert.equal(validateName(''), "Name can't be empty");
   assert.equal(validateName('x'.repeat(201)), 'Name is too long');

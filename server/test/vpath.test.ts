@@ -27,7 +27,7 @@ before(async () => {
   const outside = await tempDir();   // a folder next to MEDIA_ROOT, not inside it
   cfg = testConfig({ mediaRoot: media, dataDir: await tempDir() });
   for (const f of ['pics/family/xmas/a.jpg', 'pics/family/Дача #2 (2024)/IMG 50%.jpg', 'pics/family-extra/z.jpg', 'pics/test1/b.jpg',
-    'pics/.hidden/x.jpg', 'pics/@eaDir/y.jpg', 'other/secret.jpg']) {
+    'pics/.hidden/x.jpg', 'pics/@eaDir/y.jpg', 'pics/$RECYCLE.BIN./x.jpg', 'other/secret.jpg']) {
     await mkdir(dirname(join(media, f)), { recursive: true });
     await writeFile(join(media, f), 'x');
   }
@@ -38,6 +38,7 @@ before(async () => {
     ['../family-extra', 'pics/family/sibling'],    // its real path starts with the share's real path, but is not below it
     ['loop', 'pics/family/loop'],                  // ELOOP
     ['.hidden', 'pics/peek'],                      // inside the "All" share, but lands in a hidden folder
+    ['$RECYCLE.BIN.', 'pics/peek2'],               // the same, spelled the way vfat echoes a client's trailing dot back from realpath
     ['family', 'pics/viaLink'],                    // a share can sit on a symlink
     [outside, 'pics/out'],                         // leaves MEDIA_ROOT
     ['..', 'pics/self'],                           // is MEDIA_ROOT
@@ -87,7 +88,7 @@ test('requireRight / requireUnprotected', async () => {
 test('splitVpath', () => {
   assert.deepEqual(splitVpath('/'), []);
   assert.deepEqual(splitVpath('/Family photos/Дача #2 (2024)'), ['Family photos', 'Дача #2 (2024)']);
-  for (const p of ['', 'a', '/a/', '//', '/a/..', '/.', '/a/.b', '/a/Thumbs.db', '/a/#RECYCLE', '/a\\b', '/a/b\0'])
+  for (const p of ['', 'a', '/a/', '//', '/a/..', '/.', '/a/.b', '/a/Thumbs.db', '/a/#RECYCLE', '/a/@eaDir.', '/a/$RECYCLE.BIN.', '/a/Thumbs.db ', '/a\\b', '/a/b\0'])
     assert.throws(() => splitVpath(p), INVALID, JSON.stringify(p));
   for (const p of [undefined, null, 5, ['/a'], { a: 1 }]) assert.throws(() => splitVpath(p as never), INVALID);   // request bodies are untrusted (G6)
 });
@@ -104,6 +105,8 @@ test('404 for a sibling that shares the prefix, a loop and a file used as a fold
 test('a symlink into a hidden folder is refused', async () => {
   await assert.rejects(resolve(cfg, papa, shares, '/All/peek/x.jpg'), NOT_FOUND);
   await assert.rejects(resolve(cfg, admin, [], '/pics/peek'), NOT_FOUND);
+  await assert.rejects(resolve(cfg, papa, shares, '/All/peek2/x.jpg'), NOT_FOUND);   // a trailing dot does not make it another folder
+  await assert.rejects(resolve(cfg, admin, [], '/pics/peek2'), NOT_FOUND);
 });
 test('a share must lie strictly inside MEDIA_ROOT', async () => {
   const bad = [share(10, 'Out', 'pics/out'), share(11, 'Whole', 'pics/self'), share(12, 'Root', ''), share(13, 'Up', '..')];
@@ -166,12 +169,14 @@ test('overlong paths are a 404, not a crash', async () => {
     await assert.rejects(resolve(cfg, papa, shares, p), NOT_FOUND, `${p.length} chars`);
   await assert.rejects(resolve(cfg, admin, [], '/' + 'a'.repeat(300)), NOT_FOUND);
 });
-test('a folder the process may not enter is a 404', { skip: process.getuid?.() === 0 }, async (t) => {
+test('a folder the process may not enter is a fault of ours (500), not a 404', { skip: process.getuid?.() === 0 }, async (t) => {
   const locked = join(media, 'pics/test1/locked');
   await mkdir(join(locked, 'in'), { recursive: true });
   await chmod(locked, 0o000);
   t.after(() => chmod(locked, 0o755));
-  await assert.rejects(resolve(cfg, papa, shares, '/test1-papa/locked/in'), NOT_FOUND);
+  // the same answer whether or not the target exists, so it tells a client nothing about what is behind the folder
+  for (const p of ['/test1-papa/locked/in', '/test1-papa/locked/nope'])
+    await assert.rejects(resolve(cfg, papa, shares, p), (e: NodeJS.ErrnoException) => !(e instanceof HttpError) && e.code === 'EACCES', p);
 });
 test('only "nothing there" errors become a 404; a real fault stays one', async () => {
   // a NUL in MEDIA_ROOT makes realpath throw ERR_INVALID_ARG_VALUE, which is not one of the missing-path codes

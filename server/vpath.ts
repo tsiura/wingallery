@@ -44,8 +44,10 @@ function pickShare(shares: ShareRow[], name: string): ShareRow | null {
   return shares.find((s) => s.alias === name) ?? shares.find((s) => s.alias.toLowerCase() === lower) ?? null;
 }
 
-// The "nothing there" outcomes of realpath. Anything else (EIO, EMFILE, ...) is a fault of ours and stays a 500.
-const MISSING = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENAMETOOLONG', 'EACCES']);
+// The "nothing there" outcomes of realpath. A client chooses these path shapes, so none may be a 500: it could write error lines at will.
+// Anything else is a fault of ours and stays a 500, which fail() logs with the path: EIO, EMFILE, and EACCES too (the container can't
+// traverse its own media, so the owner has to fix the permissions). EACCES is no existence oracle: it fires at the folder, target or not.
+const MISSING = new Set(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENAMETOOLONG']);
 function missing(err: unknown): never {
   throw MISSING.has((err as NodeJS.ErrnoException).code ?? '') ? notFound() : err;
 }
