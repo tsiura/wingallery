@@ -15,14 +15,13 @@ type Open = { kind: 'purge'; item: TrashItem } | { kind: 'empty' };
 
 const itemUrl = (item: TrashItem) => `/api/admin/trash/${encodeURIComponent(item.id)}`;
 
-export function RecycleBinTab() {
+// `onFailed` is told when a restore is refused (the window shows it: this tab may have been left by the time the answer comes). The two questions answer in their own dialogs.
+export function RecycleBinTab({ onFailed }: { onFailed(message: string): void }) {
   const { data: bin, error: loadError, set, reload } = useLoad(() => api<Bin>('GET', '/api/admin/trash'));
   const [dialog, setDialog] = useState<Open | null>(null);
   const [restoring, setRestoring] = useState(false);   // a restore is out: it takes its turn behind the other changes to the disk, so one at a time
-  const [error, setError] = useState('');
-  const [restored, setRestored] = useState('');
+  const [restored, setRestored] = useState('');        // where the last item went: about the last thing done, so the next thing done clears it
   const without = (id: string) => set((b) => b && { ...b, items: b.items.filter((i) => i.id !== id) });
-  const forget = () => { setError(''); setRestored(''); };   // what the line above the table says is about the last thing done
 
   if (bin === undefined) {
     return loadError
@@ -32,13 +31,13 @@ export function RecycleBinTab() {
 
   async function restore(item: TrashItem): Promise<void> {
     setRestoring(true);
-    forget();
+    setRestored('');
     try {
       const { restoredAs } = await api<{ restoredAs: string }>('POST', `${itemUrl(item)}/restore`);
       without(item.id);
       setRestored(`Restored to ${restoredAs}`);
     } catch (err) {
-      setError((err as Error).message);
+      onFailed(`${item.name}: ${(err as Error).message}`);
       reload();   // the item may be gone since the list was read
     } finally {
       setRestoring(false);
@@ -51,7 +50,6 @@ export function RecycleBinTab() {
         <span style={{ color: '#5c616b' }}>{trashNote(bin.trashDays)}</span>
         <Button variant="danger" onClick={() => setDialog({ kind: 'empty' })} disabled={bin.items.length === 0}>Empty Recycle Bin</Button>
       </div>
-      <Alert message={error} />
       {restored && <div role="status" style={{ color: '#2f7d32', overflowWrap: 'anywhere' }}>{restored}</div>}
       {bin.items.length === 0 ? (
         <div style={{ padding: '48px 16px', textAlign: 'center', color: '#6b6f78', background: '#fff', border: '1px solid #e3e6eb', borderRadius: 8 }}>The Recycle Bin is empty.</div>
@@ -88,7 +86,7 @@ export function RecycleBinTab() {
         <ConfirmDialog title="Delete permanently" message={`Delete “${dialog.item.name}” permanently?`} detail="It can't be restored." confirmLabel="Delete" onClose={() => setDialog(null)}
           onConfirm={async () => {
             const { id } = dialog.item;
-            forget();
+            setRestored('');
             try {
               await api('DELETE', itemUrl(dialog.item));
             } catch (err) {
@@ -102,7 +100,7 @@ export function RecycleBinTab() {
         <ConfirmDialog title="Empty Recycle Bin" message={`Delete ${plural(bin.items.length, 'item', 'items')} permanently?`} detail="They can't be restored." confirmLabel="Empty Recycle Bin"
           onClose={() => setDialog(null)}
           onConfirm={async () => {
-            forget();
+            setRestored('');
             try {
               await api('DELETE', '/api/admin/trash');
             } catch (err) {

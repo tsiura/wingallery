@@ -1,6 +1,7 @@
 // Settings, Users & access (design lines 353-437, with the mockup's Shared folders table of screen 3 where the design has its folder-access tree, spec 5.2.6):
 // the users at the left, the chosen one at the right, and under both the folders shared with them: that table needs more room than the panel has. Every edit is
-// saved as it is made, and `onSaved` says so.
+// saved as it is made, and `onSaved` says so; when the server refuses one, `onFailed` says so, with whose edit it was. A box saves when it is left, and the click that
+// left it may have chosen another user: the panel and the table are `key`ed by the user and gone by the time the answer comes, and so is whatever they could have said.
 
 import { useState } from 'react';
 import type { KeyboardEvent } from 'react';
@@ -25,6 +26,9 @@ const retry = (message: string, onRetry: () => void) => (
 
 // A text box that saves when it is left or Enter is pressed in it.
 const enterLeaves = (e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') e.currentTarget.blur(); };
+
+// What the window is told when the server refuses a change to one user's settings: whose it was, then the server's words.
+const refusal = (user: AdminUser, err: unknown): string => `${user.displayName}: ${(err as Error).message}`;
 
 // Display name, username, initial password and role of a new user. `onCreated` is told of the user the server made.
 function AddUserDialog({ onCreated, onClose }: { onCreated(user: AdminUser): void; onClose(): void }) {
@@ -80,33 +84,30 @@ function ShareRow({ share, onPatch, onRemove }: { share: ShareInfo; onPatch(shar
 
 // What is shared with a member (the mockup's screen 3), as a card of its own under the list and the panel. A share's answer is not read back into the table: only
 // what was asked for is changed, so that two quick changes can't undo each other.
-function SharesSection({ user, onSaved }: { user: AdminUser; onSaved(): void }) {
+function SharesSection({ user, onSaved, onFailed }: { user: AdminUser; onSaved(): void; onFailed(message: string): void }) {
   const { data: shares, error: loadError, set, reload } = useLoad(() => api<ShareInfo[]>('GET', `/api/admin/users/${user.id}/shares`));
-  const [error, setError] = useState('');
   const [adding, setAdding] = useState(false);
   const narrow = useNarrow();
 
   async function patch(share: ShareInfo, change: SharePatch): Promise<boolean> {
-    setError('');
     try {
       await api('PATCH', `/api/admin/shares/${share.id}`, change);
       set((list) => list?.map((s) => (s.id === share.id ? { ...s, ...change } : s)));
       onSaved();
       return true;
     } catch (err) {
-      setError((err as Error).message);
+      onFailed(refusal(user, err));
       return false;
     }
   }
 
   async function remove(share: ShareInfo): Promise<void> {
-    setError('');
     try {
       await api('DELETE', `/api/admin/shares/${share.id}`);
       set((list) => list?.filter((s) => s.id !== share.id));
       onSaved();
     } catch (err) {
-      setError((err as Error).message);
+      onFailed(refusal(user, err));
     }
   }
 
@@ -136,7 +137,6 @@ function SharesSection({ user, onSaved }: { user: AdminUser; onSaved(): void }) 
                 </table>
               </div>
             )}
-        <Alert message={error} />
         <div style={{ fontSize: 12, color: '#5c616b' }}>Create = upload + new folder · Read = browse, view, slideshow, download (always on) · Update = rename, move · Delete = delete</div>
       </div>
       {adding && <AddFolderDialog user={user} onAdded={() => { reload(); onSaved(); }} onClose={() => setAdding(false)} />}
@@ -145,47 +145,33 @@ function SharesSection({ user, onSaved }: { user: AdminUser; onSaved(): void }) 
 }
 
 // The panel of one user. It is `key`ed by the user, so a field never keeps what was typed for the one before.
-function UserPanel({ user, self, onChanged, onRemoved, onSaved }: {
-  user: AdminUser; self: boolean; onChanged(id: number, patch: Partial<AdminUser>): void; onRemoved(id: number): void; onSaved(): void;
+function UserPanel({ user, self, onChanged, onRemoved, onSaved, onFailed }: {
+  user: AdminUser; self: boolean; onChanged(id: number, patch: Partial<AdminUser>): void; onRemoved(id: number): void; onSaved(): void; onFailed(message: string): void;
 }) {
   const narrow = useNarrow();
   const [name, setName] = useState(user.displayName);
   const [login, setLogin] = useState(user.username);
-  const [error, setError] = useState('');
   const [dialog, setDialog] = useState<'password' | 'remove' | null>(null);
 
-  // A refusal puts the box back as it was and says why; what the server answers is what the box shows (it trims the names).
-  async function saveName(): Promise<void> {
-    if (name === user.displayName) return;
-    setError('');
+  // Asks the server for one change to the user. What it has then, or null when it refused: that goes to the window, with whose it was, and not into this panel.
+  async function ask(patch: Partial<Pick<AdminUser, 'displayName' | 'username' | 'role'>>): Promise<AdminUser | null> {
     try {
-      const next = (await api<AdminUser>('PATCH', `/api/admin/users/${user.id}`, { displayName: name })).displayName;
-      setName(next);
-      onChanged(user.id, { displayName: next });
+      return await api<AdminUser>('PATCH', `/api/admin/users/${user.id}`, patch);
     } catch (err) {
-      setName(user.displayName);
-      setError((err as Error).message);
+      onFailed(refusal(user, err));
+      return null;
     }
   }
-  async function saveLogin(): Promise<void> {
-    if (login === user.username) return;
-    setError('');
-    try {
-      const next = (await api<AdminUser>('PATCH', `/api/admin/users/${user.id}`, { username: login })).username;
-      setLogin(next);
-      onChanged(user.id, { username: next });
-    } catch (err) {
-      setLogin(user.username);
-      setError((err as Error).message);
-    }
+  // A box that saves when it is left. What the server answers is what the box shows (it trims the names), and a refusal puts the box back as it was.
+  async function saveBox(field: 'displayName' | 'username', typed: string, show: (value: string) => void): Promise<void> {
+    if (typed === user[field]) return;
+    const kept = await ask({ [field]: typed });
+    show(kept ? kept[field] : user[field]);
+    if (kept) onChanged(user.id, { [field]: kept[field] });
   }
   async function saveRole(role: Role): Promise<void> {
-    setError('');
-    try {
-      onChanged(user.id, { role: (await api<AdminUser>('PATCH', `/api/admin/users/${user.id}`, { role })).role });
-    } catch (err) {
-      setError((err as Error).message);
-    }
+    const kept = await ask({ role });
+    if (kept) onChanged(user.id, { role: kept.role });
   }
 
   return (
@@ -199,9 +185,9 @@ function UserPanel({ user, self, onChanged, onRemoved, onSaved }: {
         {!self && <Button variant="danger" onClick={() => setDialog('remove')} style={{ height: narrow ? undefined : 30, padding: '0 12px' }}>Remove user</Button>}
       </div>
       <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-        <Field label="Display name" value={name} autoComplete="off" onChange={(e) => setName(e.target.value)} onBlur={() => void saveName()} onKeyDown={enterLeaves} />
+        <Field label="Display name" value={name} autoComplete="off" onChange={(e) => setName(e.target.value)} onBlur={() => void saveBox('displayName', name, setName)} onKeyDown={enterLeaves} />
         <Field label="Username" value={login} autoComplete="off" autoCapitalize="none" spellCheck={false}
-          onChange={(e) => setLogin(cleanUsername(e.target.value))} onBlur={() => void saveLogin()} onKeyDown={enterLeaves} />
+          onChange={(e) => setLogin(cleanUsername(e.target.value))} onBlur={() => void saveBox('username', login, setLogin)} onKeyDown={enterLeaves} />
         {!self && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={label}>Password</span>
@@ -214,7 +200,6 @@ function UserPanel({ user, self, onChanged, onRemoved, onSaved }: {
         {self
           ? <div style={{ color: '#5c616b' }}>Administrator · you can't change your own role.</div>
           : <Seg options={ROLES} value={user.role} onChange={(role) => void saveRole(role)} style={{ alignSelf: 'flex-start' }} />}
-        {error && <Alert message={error} />}
       </div>
       {user.role === 'admin' && (
         <>
@@ -238,7 +223,7 @@ function UserPanel({ user, self, onChanged, onRemoved, onSaved }: {
   );
 }
 
-export function UsersTab({ me, onMeChange, onSaved }: { me: Me; onMeChange(me: Me): void; onSaved(): void }) {
+export function UsersTab({ me, onMeChange, onSaved, onFailed }: { me: Me; onMeChange(me: Me): void; onSaved(): void; onFailed(message: string): void }) {
   const narrow = useNarrow();
   const { data: users, error, set, reload } = useLoad(() => api<AdminUser[]>('GET', '/api/admin/users'));
   const [chosen, setChosen] = useState<number | null>(null);   // until a user is picked: the first one who is not you (you come here for the others)
@@ -273,9 +258,9 @@ export function UsersTab({ me, onMeChange, onSaved }: { me: Me; onMeChange(me: M
           ))}
         </div>
       </div>
-      <UserPanel key={`user-${user.id}`} user={user} self={user.id === me.id} onChanged={changed} onSaved={onSaved}
+      <UserPanel key={`user-${user.id}`} user={user} self={user.id === me.id} onChanged={changed} onSaved={onSaved} onFailed={onFailed}
         onRemoved={(id) => { set((list) => list?.filter((u) => u.id !== id)); onSaved(); }} />
-      {user.role === 'member' && <SharesSection key={`shares-${user.id}`} user={user} onSaved={onSaved} />}
+      {user.role === 'member' && <SharesSection key={`shares-${user.id}`} user={user} onSaved={onSaved} onFailed={onFailed} />}
       {adding && <AddUserDialog onClose={() => setAdding(false)} onCreated={(created) => { set((list) => list && [...list, created]); setChosen(created.id); onSaved(); }} />}
     </div>
   );

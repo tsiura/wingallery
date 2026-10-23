@@ -12,8 +12,8 @@ import { ConfirmDialog, MoveDialog, PromptDialog } from './Dialogs.tsx';
 const TOO_MANY_SELECTED = 'Too many items selected — download the folder instead';
 const TOO_MANY_FILES = `Too many files for one download (limit ${ZIP_LIMIT})`;   // the server's own words (413), which a zip in a hidden iframe can't pass on
 
-// A line over the items about what could not be done, until it is dismissed or the user goes elsewhere.
-function Notice({ children, onDismiss }: { children: ReactNode; onDismiss(): void }) {
+// A line over the items about what could not be done, until it is dismissed or the user goes elsewhere (the settings window uses it for a change that was refused).
+export function Notice({ children, onDismiss }: { children: ReactNode; onDismiss(): void }) {
   return (
     <div role="alert" style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', background: '#fdecea', borderBottom: '1px solid #f3c9c6', color: '#a4373a' }}>
       <span style={{ flex: 1, minWidth: 0 }}>{children}</span>

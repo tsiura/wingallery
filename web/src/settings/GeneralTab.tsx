@@ -99,20 +99,21 @@ function SlideTime({ seconds, save }: { seconds: number; save(patch: Partial<Pre
   );
 }
 
-// `onMeChange` takes the user with their new preferences, `onSaved` is told when the server has kept a change, `onSignOut` ends the session (and the app shows the login).
-export function GeneralTab({ me, onMeChange, onSaved, onSignOut }: { me: Me; onMeChange(me: Me): void; onSaved(): void; onSignOut(): Promise<void> }) {
-  const [error, setError] = useState('');
+// `onMeChange` takes the user with their new preferences, `onSaved` and `onFailed` are told when the server has kept a change and when it has refused one (the window shows
+// both: the tab may have been left by the time the answer comes), `onSignOut` ends the session (and the app shows the login).
+export function GeneralTab({ me, onMeChange, onSaved, onFailed, onSignOut }: {
+  me: Me; onMeChange(me: Me): void; onSaved(): void; onFailed(message: string): void; onSignOut(): Promise<void>;
+}) {
   const [leaving, setLeaving] = useState(false);
   const [leaveError, setLeaveError] = useState('');
 
   async function save(patch: Partial<Prefs>): Promise<boolean> {
-    setError('');
     try {
       onMeChange({ ...me, prefs: await api<Prefs>('PUT', '/api/me/prefs', patch) });
       onSaved();
       return true;
     } catch (err) {
-      setError((err as Error).message);
+      onFailed((err as Error).message);
       return false;
     }
   }
@@ -125,17 +126,14 @@ export function GeneralTab({ me, onMeChange, onSaved, onSignOut }: { me: Me; onM
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <Section title="Browsing">
-          <Row label="Default view" first>
-            <Seg options={VIEWS} value={me.prefs.defaultView} onChange={(defaultView) => { void save({ defaultView }); }} />
-          </Row>
-          <Row label="Default slide time">
-            <SlideTime seconds={me.prefs.slideSeconds} save={save} />
-          </Row>
-        </Section>
-        <Alert message={error} />
-      </div>
+      <Section title="Browsing">
+        <Row label="Default view" first>
+          <Seg options={VIEWS} value={me.prefs.defaultView} onChange={(defaultView) => { void save({ defaultView }); }} />
+        </Row>
+        <Row label="Default slide time">
+          <SlideTime seconds={me.prefs.slideSeconds} save={save} />
+        </Row>
+      </Section>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <Section title="Account">
           <Row label={`Signed in as ${me.displayName} · ${roleName(me.role)}`} first>

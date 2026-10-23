@@ -1,9 +1,13 @@
 // The settings window (design lines 269-444): a rail with the signed-in user and the tabs, the tab's title with a "Saved" that shows when a change has been kept, and the tab.
 // Administrators have two tabs more than members. On a phone the rail is a row of tabs under the title. Rendered by Explorer for as long as it is wanted: mounted
 // means open (G12). `onMeChange` takes the signed-in user when their own name or preferences have changed.
+// A change the server refuses is told to the window (`onFailed`) and not shown by whatever made it: a box saves when it is left, and the click that left it may have taken
+// the admin to another user, so the place the answer was due is gone by the time it comes. It is a line over the tab, until it is dismissed or the next change is kept.
 
+import { useState } from 'react';
 import type { Me } from '../../../shared/types.ts';
 import type { SettingsTab } from '../explorer/TitleBar.tsx';
+import { Notice } from '../explorer/useFileActions.tsx';
 import { roleName } from '../lib/settings.ts';
 import { Avatar, Dialog } from '../ui/controls.tsx';
 import { useFlash, useNarrow } from '../ui/hooks.ts';
@@ -19,6 +23,8 @@ export function Settings({ me, tab, onTab, onClose, onMeChange, onSignOut }: {
 }) {
   const narrow = useNarrow();
   const [saved, flash] = useFlash(1500);
+  const [failure, setFailure] = useState('');
+  const kept = () => { setFailure(''); flash(); };   // a change was kept: "Saved", and a refusal that is still on show is over
   const tabs = TABS.filter(([, , adminOnly]) => me.role === 'admin' || !adminOnly);
   const [shown, title] = tabs.find(([key]) => key === tab) ?? tabs[0];   // a member is never on an administrator's tab
 
@@ -51,10 +57,11 @@ export function Settings({ me, tab, onTab, onClose, onMeChange, onSignOut }: {
             <button type="button" className="bar-btn sq" title="Close" aria-label="Close" onClick={onClose}><Icon name="close" size={12} /></button>
           </div>
           {narrow && nav}
+          {failure && <Notice onDismiss={() => setFailure('')}>{failure}</Notice>}
           <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: narrow ? '0 16px 20px' : '0 28px 28px' }}>
-            {shown === 'general' && <GeneralTab me={me} onMeChange={onMeChange} onSaved={flash} onSignOut={onSignOut} />}
-            {shown === 'users' && <UsersTab me={me} onMeChange={onMeChange} onSaved={flash} />}
-            {shown === 'trash' && <RecycleBinTab />}
+            {shown === 'general' && <GeneralTab me={me} onMeChange={onMeChange} onSaved={kept} onFailed={setFailure} onSignOut={onSignOut} />}
+            {shown === 'users' && <UsersTab me={me} onMeChange={onMeChange} onSaved={kept} onFailed={setFailure} />}
+            {shown === 'trash' && <RecycleBinTab onFailed={setFailure} />}
           </div>
         </div>
       </div>
