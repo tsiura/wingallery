@@ -103,7 +103,8 @@ export async function listShareInfo(cfg: Config, db: DB, userId: number): Promis
 }
 
 // A folder was renamed or moved from `oldRel` to `newRel` (both below MEDIA_ROOT): the shares of that folder and of everything under it follow.
-// Matched in JS, not with LIKE, because _ and % are ordinary characters in folder names. Returns how many shares moved.
+// Matched by spelling, in JS, not with LIKE, because _ and % are ordinary characters in folder names. Returns how many shares moved.
+// Renames and moves don't use it any more: followFolder matches by folder, which spelling can't (case-insensitive disks, symlinks).
 // ponytail: a new path that already is another share of the same user fails the UNIQUE index and moves none; drop the stale share if that ever shows.
 export function rewriteSharePaths(db: DB, oldRel: string, newRel: string): number {
   db.exec('BEGIN IMMEDIATE');
@@ -114,6 +115,67 @@ export function rewriteSharePaths(db: DB, oldRel: string, newRel: string): numbe
     for (const r of hits) update.run(newRel + r.rel_path.slice(oldRel.length), r.id);
     db.exec('COMMIT');
     return hits.length;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+// A share that moved with its folder: which one, and the path it had.
+export interface MovedShare { id: number; oldRel: string }
+
+// The folder a path names, as "device:inode", following links; read as BigInts so that no inode number is rounded. null when it can't be read,
+// which is what a share of a folder that is gone (unavailable) comes to.
+const folderId = (abs: string): Promise<string | null> => stat(abs, { bigint: true }).then((s) => `${s.dev}:${s.ino}`, () => null);
+
+// The folder at `fromAbs`, `oldRel` below MEDIA_ROOT, is about to be renamed or moved to `newRel`: the shares of that folder and of everything below
+// it follow, in one transaction. A clash with another share of the same user (UNIQUE) throws with nothing changed. Returns the shares that moved, so
+// that a rename which then fails puts back exactly those (restoreShares), not whatever else lies at the path.
+// Shares are matched by the folder they name, not by how their path is spelled: on a case-insensitive disk, or through a symlink, 'pics/Family/xmas'
+// and 'pics/family/xmas' are one folder, and a share keeps the spelling it was made with. So each share is looked at through the first `depth` segments
+// of its path, `depth` being that of the folder; if those are the folder, the share follows, and gets `newRel` plus what comes after them.
+// A share whose folder is not there (unavailable) never matches, whether it is the first segments that are missing or only its own folder below the
+// moved one: it stays at its path, where bringing the folder back (out of the bin, say) brings the share back. Other folders' shares are not touched.
+// Two shares of one user that name the folder in two spellings end up on one path: that is a clash too.
+// ponytail: a share that reaches the folder through a symlink of another depth ('fam/xmas' for 'pics/family/xmas') is not followed; stat every
+// prefix of a path, not only the first `depth` segments, if that ever shows. A share added while this runs (a few stat calls) is missed too.
+export async function followFolder(cfg: Config, db: DB, fromAbs: string, oldRel: string, newRel: string): Promise<MovedShare[]> {
+  const source = await folderId(fromAbs);
+  if (source === null) return [];
+  const depth = oldRel.split('/').length;
+  const heads = new Map<string, Promise<string | null>>();   // by the first `depth` segments: many shares sit in the same folders
+  const rows = db.prepare('select id, rel_path from shares').all() as { id: number; rel_path: string }[];
+  const hits = (await Promise.all(rows.map(async (r) => {
+    const segs = r.rel_path.split('/');
+    if (segs.length < depth) return null;
+    const head = segs.slice(0, depth).join('/');
+    let id = heads.get(head);
+    if (!id) heads.set(head, id = folderId(join(cfg.mediaRoot, head)));
+    if ((await id) !== source) return null;
+    if (segs.length > depth && (await folderId(join(cfg.mediaRoot, r.rel_path))) === null) return null;   // its own folder is gone
+    return { id: r.id, from: r.rel_path, to: [newRel, ...segs.slice(depth)].join('/') };
+  }))).filter((h) => h !== null);
+  if (hits.length === 0) return [];
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const update = db.prepare('update shares set rel_path = ? where id = ? and rel_path = ?');   // a share removed or changed meanwhile is left alone
+    const moved = hits.filter((h) => update.run(h.to, h.id, h.from).changes === 1);
+    db.exec('COMMIT');
+    return moved.map((h) => ({ id: h.id, oldRel: h.from }));
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+// Puts back the shares followFolder moved, by id and in one transaction: no other share is touched.
+export function restoreShares(db: DB, moved: MovedShare[]): void {
+  if (moved.length === 0) return;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const update = db.prepare('update shares set rel_path = ? where id = ?');
+    for (const m of moved) update.run(m.oldRel, m.id);
+    db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;

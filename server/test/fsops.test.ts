@@ -3,7 +3,7 @@ import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { mapFsError } from '../fsops.ts';
+import * as fsops from '../fsops.ts';
 import { HttpError } from '../http.ts';
 import { seedTree, startTestApp } from './helpers.ts';
 import type { Client, TestApp } from './helpers.ts';
@@ -14,13 +14,13 @@ const SAME_SHARE = { status: 400, body: { error: 'Items can only be moved within
 const INTO_ITSELF = { status: 400, body: { error: "Can't move a folder into itself" } };
 const READ_ONLY = { status: 409, body: { error: 'This folder is read-only on disk' } };
 
-let ta: TestApp, admin: Client, papa: Client, editor: Client, mama: Client, mamaId: number;
+let ta: TestApp, admin: Client, papa: Client, editor: Client, mama: Client, mamaId: number, papaId: number;
 
 const post = (c: Client, route: string, body: unknown) => c.json('POST', `/api/${route}`, body);
 const exists = (rel: string) => stat(join(ta.media, rel)).then(() => true, () => false);
-// Shares that no folder-picking request could make: Mama's, with no rights, and possibly of a folder that is not there.
-const addShare = (alias: string, relPath: string) =>
-  ta.db.prepare('insert into shares (user_id, alias, rel_path, can_create, can_update, can_delete) values (?, ?, ?, 0, 0, 0)').run(mamaId, alias, relPath);
+// Shares that no folder-picking request could make: with no rights, Mama's unless another user is named, and possibly of a folder that is not there.
+const addShare = (alias: string, relPath: string, userId = mamaId) =>
+  ta.db.prepare('insert into shares (user_id, alias, rel_path, can_create, can_update, can_delete) values (?, ?, ?, 0, 0, 0)').run(userId, alias, relPath);
 const shareOf = (alias: string) => ta.db.prepare('select rel_path from shares where alias = ?').get(alias)?.rel_path;
 
 // console.log from here on; the result gives the audit events (JSON lines) without their timestamp.
@@ -36,7 +36,7 @@ before(async () => {
   await seedTree(ta.media, ['pics/family/a.jpg', 'pics/family/c.jpg', 'pics/family/d.jpg', 'pics/family/xmas/sub/', 'pics/other/', 'pics/ro/']);
   admin = await ta.admin();
   const [p, e, m] = [await ta.addUser('papa', 'member'), await ta.addUser('editor', 'member'), await ta.addUser('mama', 'member')];
-  [papa, editor, mama, mamaId] = [p.client, e.client, m.client, m.id];
+  [papa, editor, mama, mamaId, papaId] = [p.client, e.client, m.client, m.id, p.id];
   const share = async (id: number, alias: string, relPath: string, rights: string) => {
     const r = await admin.json('POST', `/api/admin/users/${id}/shares`, { relPath, alias, create: rights.includes('c'), update: rights.includes('u'), delete: rights.includes('d') });
     assert.equal(r.status, 200);
@@ -154,15 +154,53 @@ test('a folder takes the shares inside it along; a clash with another share is a
   assert.deepEqual([shareOf('Live'), shareOf('Stale')], ['pics/other/sh/box', 'pics/other/sh/gone']);
   assert.deepEqual(await post(editor, 'move', { paths: ['/Other/sh/box'], to: '/Other/sh/dst' }), { status: 200, body: { moved: 1 } });
   assert.equal(shareOf('Live'), 'pics/other/sh/dst/box');
+
+  // all or none: the first share could move, the second would land on a share of the same user, so neither moves
+  await seedTree(ta.media, ['pics/other/sh/two/a/', 'pics/other/sh/two/b/']);
+  addShare('FirstOfTwo', 'pics/other/sh/two/a'); addShare('SecondOfTwo', 'pics/other/sh/two/b'); addShare('Taken', 'pics/other/sh/three/b');
+  assert.deepEqual(await post(editor, 'rename', { path: '/Other/sh/two', name: 'three' }), EXISTS);
+  assert.deepEqual([shareOf('FirstOfTwo'), shareOf('SecondOfTwo')], ['pics/other/sh/two/a', 'pics/other/sh/two/b']);
 });
-test('a rename that fails on disk puts the shares back (R3)', { skip: process.getuid?.() === 0 }, async (t) => {
+test('a rename that fails on disk puts back exactly the shares it moved; shares of missing folders stay where they are (R3)', { skip: process.getuid?.() === 0 }, async (t) => {
   await seedTree(ta.media, ['pics/other/rv/ro/src/p.jpg']);
   addShare('Rev', 'pics/other/rv/ro/src');
+  // Papa's shares of folders that are not there: at the name the rename would give, below it, and at the name the move would give.
+  // They are no part of what moves, so putting things back must not touch them (it would hand Papa the folder that stays).
+  addShare('GoneAt', 'pics/other/rv/ro/dst', papaId); addShare('GoneBelow', 'pics/other/rv/ro/dst/deeper', papaId); addShare('GoneMove', 'pics/other/rv/src', papaId);
   await chmod(join(ta.media, 'pics/other/rv/ro'), 0o555); t.after(() => chmod(join(ta.media, 'pics/other/rv/ro'), 0o755));
   assert.deepEqual(await post(editor, 'rename', { path: '/Other/rv/ro/src', name: 'dst' }), READ_ONLY);
   assert.deepEqual(await post(editor, 'move', { paths: ['/Other/rv/ro/src'], to: '/Other/rv' }), READ_ONLY);
-  assert.equal(shareOf('Rev'), 'pics/other/rv/ro/src');
+  assert.deepEqual([shareOf('Rev'), shareOf('GoneAt'), shareOf('GoneBelow'), shareOf('GoneMove')],
+    ['pics/other/rv/ro/src', 'pics/other/rv/ro/dst', 'pics/other/rv/ro/dst/deeper', 'pics/other/rv/src']);
   assert.deepEqual((await mama.json('GET', '/api/list?path=%2FRev')).body.entries.map((e: any) => e.name), ['p.jpg']);
+});
+test('shares of folders that are not there are never rewritten', async () => {
+  await seedTree(ta.media, ['pics/other/uv/src/p.jpg', 'pics/other/uv/src/live/q.jpg']);
+  addShare('LiveUv', 'pics/other/uv/src'); addShare('LiveInside', 'pics/other/uv/src/live');
+  // Papa's: of folders beside the one that moves, at the name it gets, and below it (in the bin, say: restoring the folder is what brings these back)
+  addShare('StaleSibling', 'pics/other/uv/gone', papaId); addShare('StaleBelow', 'pics/other/uv/gone/deeper', papaId); addShare('StaleAtName', 'pics/other/uv/dst', papaId);
+  addShare('GoneInside', 'pics/other/uv/src/gone', papaId); addShare('GoneInsideDeep', 'pics/other/uv/src/gone/deeper', papaId);
+  assert.deepEqual(await post(editor, 'rename', { path: '/Other/uv/src', name: 'dst' }), { status: 200, body: { name: 'dst' } });
+  assert.deepEqual([shareOf('LiveUv'), shareOf('LiveInside')], ['pics/other/uv/dst', 'pics/other/uv/dst/live']);
+  assert.deepEqual([shareOf('StaleSibling'), shareOf('StaleBelow'), shareOf('StaleAtName'), shareOf('GoneInside'), shareOf('GoneInsideDeep')],
+    ['pics/other/uv/gone', 'pics/other/uv/gone/deeper', 'pics/other/uv/dst', 'pics/other/uv/src/gone', 'pics/other/uv/src/gone/deeper']);   // StaleAtName keeps its path, which a folder now takes
+});
+test('shares follow the folder they name, not the spelling of their path (a symlinked prefix stands in for a case-insensitive disk)', async () => {
+  await seedTree(ta.media, ['pics/other/id/real/xmas/sub/', 'pics/other/id/real/xmas/p.jpg', 'pics/other/id/real/other/q.jpg'], [['real', 'pics/other/id/lnk']]);
+  // made through the symlink: the folder itself, and one below it; and one made by the real path
+  addShare('ViaLink', 'pics/other/id/lnk/xmas'); addShare('ViaLinkSub', 'pics/other/id/lnk/xmas/sub'); addShare('ViaReal', 'pics/other/id/real/other');
+  // Mama also has the same folder spelled the other way: both would end up on one path, which is a clash, and nothing moves
+  addShare('Twin', 'pics/other/id/real/xmas');
+  assert.deepEqual(await post(editor, 'rename', { path: '/Other/id/real/xmas', name: 'Z' }), EXISTS);
+  assert.deepEqual([shareOf('ViaLink'), shareOf('ViaLinkSub'), shareOf('Twin'), await exists('pics/other/id/real/xmas')], ['pics/other/id/lnk/xmas', 'pics/other/id/lnk/xmas/sub', 'pics/other/id/real/xmas', true]);
+  ta.db.prepare('delete from shares where alias = ?').run('Twin');
+  assert.deepEqual(await post(editor, 'rename', { path: '/Other/id/real/xmas', name: 'Z' }), { status: 200, body: { name: 'Z' } });
+  assert.deepEqual([shareOf('ViaLink'), shareOf('ViaLinkSub'), shareOf('ViaReal')], ['pics/other/id/real/Z', 'pics/other/id/real/Z/sub', 'pics/other/id/real/other']);
+  assert.deepEqual((await mama.json('GET', '/api/list?path=%2FViaLink')).body.entries.map((e: any) => e.name), ['sub', 'p.jpg']);
+  // and the other way round: renamed through the symlink, followed by the share made by the real path
+  assert.deepEqual(await post(editor, 'rename', { path: '/Other/id/lnk/other', name: 'Y' }), { status: 200, body: { name: 'Y' } });
+  assert.equal(shareOf('ViaReal'), 'pics/other/id/lnk/Y');
+  assert.deepEqual((await mama.json('GET', '/api/list?path=%2FViaReal')).body.entries.map((e: any) => e.name), ['q.jpg']);
 });
 
 test('moving a shared folder into a sibling rewrites the other user\'s share (F15)', async () => {
@@ -226,6 +264,18 @@ test('two renames to one name at the same time: one wins, nothing is overwritten
   }
 });
 
+test('two moves of one name into one folder at the same time: one wins, nothing is overwritten', async () => {
+  const pairs = Array.from({ length: 20 }, (_, i) => i);
+  await seedTree(ta.media, pairs.flatMap((i) => [`pics/other/cm/a${i}/x.jpg`, `pics/other/cm/b${i}/x.jpg`, `pics/other/cm/into${i}/`]));
+  for (const i of pairs) {
+    await writeFile(join(ta.media, `pics/other/cm/a${i}/x.jpg`), 'A'); await writeFile(join(ta.media, `pics/other/cm/b${i}/x.jpg`), 'B');
+    const rs = await Promise.all(['a', 'b'].map((n) => post(editor, 'move', { paths: [`/Other/cm/${n}${i}/x.jpg`], to: `/Other/cm/into${i}` })));
+    assert.deepEqual(rs.map((r) => r.status).sort(), [200, 409], `pair ${i}`);
+    const left = await Promise.all([`a${i}`, `b${i}`, `into${i}`].map((d) => readFile(join(ta.media, 'pics/other/cm', d, 'x.jpg'), 'utf8').catch(() => '')));
+    assert.deepEqual(left.filter(Boolean).sort(), ['A', 'B'], `pair ${i}`);
+  }
+});
+
 test('every change drops the folder cache, and is audited (G9)', async (t) => {
   await seedTree(ta.media, ['pics/other/au/src/a.jpg', 'pics/other/au/box/']);
   const folders = async () => Object.fromEntries((await editor.json('GET', '/api/list?path=%2FOther%2Fau')).body.entries.map((e: any) => [e.name, [e.count, e.cover]]));
@@ -249,13 +299,38 @@ test('every change drops the folder cache, and is audited (G9)', async (t) => {
   ]);
 });
 
+test('the exported mutation queue is the one every change to the tree waits in', async (t) => {
+  let release = () => {};
+  t.after(() => release());                                // a failed assert must not leave the queue held for the tests after this one
+  const held = fsops.mutationQueue(() => new Promise<void>((resolve) => { release = resolve; }));
+  const queued = post(editor, 'mkdir', { path: '/Other', name: 'waits' });
+  assert.equal(await Promise.race([queued.then(() => 'done'), new Promise((resolve) => setTimeout(resolve, 300, 'waiting'))]), 'waiting');
+  assert.equal(await exists('pics/other/waits'), false);
+  release(); await held;
+  assert.equal((await queued).status, 200);
+  assert.equal(await exists('pics/other/waits'), true);
+});
+
+test('a name that makes the whole path too long is a 400, not a 500', async () => {
+  await seedTree(ta.media, ['pics/other/nl/']);
+  const name = 'x'.repeat(200);
+  let parent = '/Other/nl', depth = 0, last;
+  do {
+    last = await post(editor, 'mkdir', { path: parent, name });
+    parent += '/' + name; depth++;
+  } while (last.status === 200 && depth < 40);
+  assert.deepEqual(last, { status: 400, body: { error: 'Name is too long' } });
+  assert.ok(depth > 5, `it took ${depth} levels`);       // a deep tree: every folder that exists has a path that fits
+});
+
 test('mapFsError', () => {
   const code = (c: string) => Object.assign(new Error(c), { code: c });
-  const outcome = (e: unknown) => { try { mapFsError(e); } catch (err) { return err instanceof HttpError ? [err.status, err.message] : err; } };
+  const outcome = (e: unknown) => { try { fsops.mapFsError(e); } catch (err) { return err instanceof HttpError ? [err.status, err.message] : err; } };
   for (const [c, status, message] of [
     ['EROFS', 409, 'This folder is read-only on disk'], ['EACCES', 409, 'This folder is read-only on disk'], ['EPERM', 409, 'This folder is read-only on disk'],
-    ['ENOSPC', 507, 'Disk is full'], ['EEXIST', 409, 'A file or folder with that name already exists'], ['ENOTEMPTY', 409, 'A file or folder with that name already exists'],
-    ['ENOENT', 404, 'Not found'], ['ENOTDIR', 404, 'Not found'], ['EXDEV', 400, 'Items can only be moved within the same shared folder'],
+    ['ENOSPC', 507, 'Disk is full'], ['EDQUOT', 507, 'Disk is full'], ['EEXIST', 409, 'A file or folder with that name already exists'],
+    ['ENOTEMPTY', 409, 'A file or folder with that name already exists'], ['ENOENT', 404, 'Not found'], ['ENOTDIR', 404, 'Not found'],
+    ['ENAMETOOLONG', 400, 'Name is too long'], ['EXDEV', 400, 'Items can only be moved within the same shared folder'],
   ] as const) assert.deepEqual(outcome(code(c)), [status, message], c);
   const other = code('EIO');
   assert.equal(outcome(other), other);                     // anything else is rethrown as it is
