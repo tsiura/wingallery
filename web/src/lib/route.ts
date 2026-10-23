@@ -31,3 +31,13 @@ export function parentOf(vpath: string): string | null {
 export const nameOf = (vpath: string): string => vpath.slice(vpath.lastIndexOf('/') + 1);
 
 export const joinV = (parent: string, name: string): string => (parent === '/' ? '' : parent) + '/' + name;
+
+// What the root of every tree is called, an admin's media folder and a member's list of shares alike (the server says the same in a listing's `name`).
+export const ROOT_NAME = 'Home Gallery';
+
+// The root, then every folder down to `vpath`, each with the path that opens it: the breadcrumbs.
+export function crumbsOf(vpath: string): { name: string; vpath: string }[] {
+  const crumbs = [{ name: ROOT_NAME, vpath: '/' }];
+  for (const name of vpath.split('/').filter(Boolean)) crumbs.push({ name, vpath: joinV(crumbs[crumbs.length - 1].vpath, name) });
+  return crumbs;
+}

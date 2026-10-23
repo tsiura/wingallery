@@ -1,10 +1,11 @@
-// The design's icons as inline SVG (16x16 grid), and the app's logo. Strokes and fills take the text colour (`color`), except the folder, which is yellow.
+// The design's icons as inline SVG (16x16 grid), and the app's logo. Strokes and fills take the text colour (`color`), except the folders, which are yellow
+// (`folderFlat` is the address bar's, in one tone).
 // The icons the design doesn't have (settings, user, upload, newFolder, rename, move, delete, download, menu, fullscreen) are drawn the same way.
 
 import type { ReactNode } from 'react';
 
 export type IconName =
-  | 'folder' | 'back' | 'forward' | 'up' | 'search' | 'play' | 'pause' | 'prev' | 'next' | 'close' | 'large' | 'medium' | 'details' | 'sort' | 'select'
+  | 'folder' | 'folderFlat' | 'back' | 'forward' | 'up' | 'search' | 'play' | 'pause' | 'prev' | 'next' | 'close' | 'large' | 'medium' | 'details' | 'sort' | 'select'
   | 'settings' | 'user' | 'upload' | 'newFolder' | 'rename' | 'move' | 'delete' | 'download' | 'menu' | 'fullscreen';
 
 const line = (width: number, shapes: ReactNode) => (
@@ -17,6 +18,7 @@ const TRAY = 'M2.5 10.5v2a1 1 0 001 1h9a1 1 0 001-1v-2';
 
 const ICONS: Record<IconName, ReactNode> = {
   folder: <><path d={FOLDER_OUTLINE} fill="#f2bf4b" /><path d="M1.5 6.5h13v5.9a1 1 0 01-1 1h-11a1 1 0 01-1-1z" fill="#f8d36f" /></>,
+  folderFlat: <path d={FOLDER_OUTLINE} fill="#f2bf4b" />,
   back: line(1.3, <path d="M13 8H3M7 4L3 8l4 4" />),
   forward: line(1.3, <path d="M3 8h10M9 4l4 4-4 4" />),
   up: line(1.3, <path d="M8 13V3M4 7l4-4 4 4" />),
@@ -45,6 +47,15 @@ const ICONS: Record<IconName, ReactNode> = {
 
 export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" style={{ flexShrink: 0 }}>{ICONS[name]}</svg>;
+}
+
+// The small chevron of the folder tree and the breadcrumbs: the design draws it on a 12-unit grid, in its own sizes, greys and stroke widths.
+export function Chevron({ size, color, width }: { size: number; color: string; width: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 12 12" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <path d="M4.5 2.5L8 6l-3.5 3.5" stroke={color} strokeWidth={width} fill="none" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 // The title-bar logo of the design (18 px: a 5 px radius and an 11 px glyph), at any size.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { browseHref, joinV, nameOf, parentOf, vpathFromLocation } from './route.ts';
+import { browseHref, crumbsOf, joinV, nameOf, parentOf, ROOT_NAME, vpathFromLocation } from './route.ts';
 
 test('route helpers', () => {
   assert.equal(vpathFromLocation('/browse'), '/'); assert.equal(vpathFromLocation('/browse/'), '/');
@@ -8,6 +8,14 @@ test('route helpers', () => {
   assert.equal(browseHref('/Family photos/IMG 50%'), '/browse/Family%20photos/IMG%2050%25');
   assert.equal(parentOf('/a/b'), '/a'); assert.equal(parentOf('/a'), '/'); assert.equal(parentOf('/'), null);
   assert.equal(nameOf('/a/b'), 'b'); assert.equal(joinV('/', 'a'), '/a'); assert.equal(joinV('/a', 'b'), '/a/b');
+});
+
+test('breadcrumbs: the root, then each folder with the path that opens it', () => {
+  assert.equal(ROOT_NAME, 'Home Gallery');
+  assert.deepEqual(crumbsOf('/'), [{ name: 'Home Gallery', vpath: '/' }]);
+  assert.deepEqual(crumbsOf('/Family photos/Дача #2'), [
+    { name: 'Home Gallery', vpath: '/' }, { name: 'Family photos', vpath: '/Family photos' }, { name: 'Дача #2', vpath: '/Family photos/Дача #2' },
+  ]);
 });
 
 test('a hand-typed address never breaks the app', () => {

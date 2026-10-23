@@ -1,22 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { Me, SessionInfo } from '../../shared/types.ts';
+import type { SessionInfo } from '../../shared/types.ts';
 import { api } from './api.ts';
+import { Explorer } from './explorer/Explorer.tsx';
 import { isBrowsePath } from './lib/route.ts';
 import { AuthCard, Login } from './pages/Login.tsx';
 import { Setup } from './pages/Setup.tsx';
 import { Button } from './ui/controls.tsx';
-
-// Stands in for the Explorer until it is built.
-function Explorer({ me, onSignOut }: { me: Me; onSignOut(): Promise<void> }) {
-  const [error, setError] = useState('');
-  return (
-    <div style={{ padding: 24, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-      <span>Signed in as {me.displayName}</span>
-      <Button onClick={() => onSignOut().catch((err: Error) => setError(err.message))}>Sign out</Button>
-      {error && <span role="alert" style={{ color: '#a4373a' }}>{error}</span>}
-    </div>
-  );
-}
 
 // Decides what the address shows: the first-run setup, the login, or the Explorer.
 export function App() {
@@ -50,5 +39,5 @@ export function App() {
   if (!session) return null;
   if (session.setupRequired) return <Setup onDone={(user) => enter({ user, setupRequired: false })} />;
   if (!session.user) return <Login onDone={(user) => enter({ user, setupRequired: false })} />;
-  return <Explorer me={session.user} onSignOut={signOut} />;
+  return <Explorer me={session.user} onMeChange={(user) => setSession((s) => s && { ...s, user })} onSignOut={signOut} />;
 }
