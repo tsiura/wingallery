@@ -15,7 +15,7 @@ import { byName, isHiddenName } from './names.ts';
 import { joinVpath, resolve, sharesForUser } from './vpath.ts';
 import type { Loc, ShareRow } from './vpath.ts';
 
-const ROOT_NAME = 'Home Gallery';
+export const ROOT_NAME = 'Home Gallery';
 const STATS_TTL_MS = 30_000;
 
 const present = <T>(x: T | null): x is T => x !== null;
@@ -25,7 +25,7 @@ const isGone = (err: unknown) => code(err) === 'ENOENT' || code(err) === 'ENOTDI
 interface Visible { dirs: string[]; files: { name: string; type: MediaType }[] }
 
 // The folders and media files of a directory, each in natural name order.
-async function readVisible(abs: string): Promise<Visible> {
+export async function readVisible(abs: string): Promise<Visible> {
   const dirs: string[] = [];
   const files: Visible['files'] = [];
   for (const e of await readdir(abs, { withFileTypes: true })) {

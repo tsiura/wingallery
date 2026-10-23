@@ -1,17 +1,18 @@
-// The endpoints the UI loads every image and video from: the thumbnail, the viewable version and the download of one media file. Each handler starts
-// with requireUser, before it looks at the path; the path then goes through locate(), like every request that touches files.
+// The endpoints the UI loads every image and video from: the thumbnail, the viewable version, the download of one media file and the zip of a selection.
+// Each handler starts with requireUser, before it looks at the path; the path then goes through locate(), like every request that touches files.
 
 import type { Stats } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { basename } from 'node:path';
 import type { App } from './app.ts';
 import { requireUser } from './auth.ts';
-import { HttpError } from './http.ts';
+import { HttpError, readForm, str } from './http.ts';
 import type { Ctx } from './http.ts';
 import { mediaTypeOf } from './mediatypes.ts';
 import type { MediaType } from './mediatypes.ts';
 import { sendFile } from './send.ts';
 import { locate } from './vpath.ts';
+import { streamZip } from './zip.ts';
 
 // The file a request names, or 404: only a regular file with a media extension is ever served, whatever else lies in the share.
 // No path at all is '' and fails as an invalid one.
@@ -45,5 +46,19 @@ export function registerMediaRoutes(app: App): void {
   router.add('GET', '/media/download', async (ctx) => {
     const f = await mediaFile(app, ctx);
     await sendFile(ctx, f.abs, { type: f.type.mime, download: f.name, cache: 'revalidate' });
+  });
+
+  // A plain form post, so the browser itself saves the stream and a zip of a whole folder never passes through the page. `paths` is a JSON array of virtual paths.
+  router.add('POST', '/media/zip', async (ctx) => {
+    const user = requireUser(ctx);
+    const form = await readForm(ctx);
+    let paths: unknown;
+    try {
+      paths = JSON.parse(form.get('paths') ?? '');
+    } catch {
+      throw new HttpError(400, 'Invalid JSON');
+    }
+    if (!Array.isArray(paths)) throw new HttpError(400, 'Invalid JSON');
+    await streamZip(ctx, app, user, paths.map(str));
   });
 }
