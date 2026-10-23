@@ -2,16 +2,18 @@
 // than 60 s. The pieces go into a hidden `.upload-<id>` file in the target folder, so a partial file is never listed; the last piece gives it its name,
 // and never over a file that is there. Every disk path after the start comes from the uploads row, which this module wrote: never from the id in a
 // URL (R1), and temp_abs is only ever a path built here (R2), since removeUser removes whatever it holds.
+// A chunk is held in memory until it is written, so the route refuses what it can without reading the body, and reads the rest a few at a time.
 
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { copyFile, link, open, rm, writeFile } from 'node:fs/promises';
+import { link, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { Me } from '../shared/types.ts';
 import type { App } from './app.ts';
 import type { DB } from './db.ts';
-import { mapFsError, mutationQueue } from './fsops.ts';
+import { mapFsError, mutationQueue, taken } from './fsops.ts';
 import { HttpError } from './http.ts';
+import { pLimit } from './limit.ts';
 import { invalidateStats } from './listing.ts';
 import { log } from './log.ts';
 import { checkMagic, mediaTypeOf } from './mediatypes.ts';
@@ -19,10 +21,14 @@ import { nextFreeName, sanitizeUploadName } from './names.ts';
 import { childAbs, locate, requireRight } from './vpath.ts';
 
 export const CHUNK_MAX = 16 * 1024 * 1024;
+// A chunk request reads its whole body into memory (up to CHUNK_MAX) and writes it, all inside one of these. So at most 4 bodies, 64 MiB, are held at a
+// time across all users; the other chunk requests wait with their bodies unread. A client that trickles its body keeps its slot until Node's
+// requestTimeout cuts it (5 minutes by default).
+export const chunkSlots = pLimit(4);
 const MB = 1024 * 1024;
 const DAY_MS = 86_400_000;
 const MAGIC_BYTES = 12;   // what checkMagic can look at: the WebP signature ends at byte 12
-const NO_LINKS = new Set(['EPERM', 'ENOTSUP', 'EXDEV']);   // a disk that can't hard-link (exFAT, SMB, FUSE), or not from here to there
+const NO_LINKS = new Set(['EPERM', 'ENOTSUP', 'EXDEV']);   // a disk that can't hard-link (exFAT/FAT, some SMB), or not from here to there
 const GONE_OR_FULL = new Set(['ENOENT', 'ENOTDIR', 'ENOSPC', 'EDQUOT']);   // what ends an upload, as opposed to failing one chunk
 
 interface UploadRow { id: string; user_id: number; dir_abs: string; temp_abs: string; name: string; size: number; received: number; updated_at: number }
@@ -82,7 +88,8 @@ export async function startUpload(app: App, user: Me, input: { dir: string; name
 }
 
 // R3: `body` goes in at `position` and is never appended, so what a crash left past `received` (the database runs with synchronous = NORMAL, and can
-// lag the disk) is written over. The chunk that completes the file cuts it at the declared size, which takes away what is left of such a tail.
+// lag the disk) is written over. The chunk that completes the file cuts it at the declared size, which takes away what is left of such a tail, and then
+// syncs it: the file is about to get the name it will be found by, and a power cut after that must not leave it short.
 // A write can stop short of what it was given, so it goes on until the chunk is in. The temp file is opened by its name, but never through a symlink.
 // ponytail: a symlink swapped in for a parent folder wins the race, as in vpath.ts: only someone who can write to the media disk can do that.
 async function putChunk(path: string, body: Buffer, position: number, size: number): Promise<void> {
@@ -93,38 +100,47 @@ async function putChunk(path: string, body: Buffer, position: number, size: numb
       if (bytesWritten === 0) throw Object.assign(new Error('A write to the upload temp file made no progress'), { code: 'EIO' });
       done += bytesWritten;
     }
-    if (position + body.length === size) await file.truncate(size);
+    if (position + body.length === size) {
+      await file.truncate(size);
+      await file.sync();
+    }
   } finally {
     await file.close();
   }
 }
 
-// A hard link, or a copy where the disk has none. Both fail with EEXIST when `to` is in use, whoever took it and whenever, so nothing is replaced.
-function linkOrCopy(from: string, to: string): Promise<void> {
-  return link(from, to).catch((e) => {
-    if (!NO_LINKS.has(code(e))) throw e;
-    return copyFile(from, to, constants.COPYFILE_EXCL);
-  });
-}
-
-// The first of "name.ext", "name (1).ext", "name (2).ext", ... that is free is taken, and returned.
-// ponytail: the copy fallback holds the mutation queue while it copies; copy to a second temp name outside the queue, and link that in, if a disk
-// without hard links ever has large uploads.
+// The first of "name.ext", "name (1).ext", "name (2).ext", ... that is free is taken, and returned. A hard link fails with EEXIST when the name is in
+// use, whoever took it and whenever, so nothing is replaced. A disk that can't hard-link (exFAT/FAT, some SMB) has no such call: there each name is
+// asked with taken(), and the first free one gets a rename(). The temp file is complete by now, so a name is never seen half written, and the
+// queue keeps the app's own changes from taking the name between the question and the rename.
+// ponytail: another writer on such a disk (Samba, Syncthing) can still take the name in that gap, and rename() replaces it silently; Node has no
+// RENAME_NOREPLACE, and nothing short of a lock that writer respects too closes the gap.
 async function place(temp: string, dir: string, name: string): Promise<string> {
+  let linkable = true;
   for (let n = 0; ; n++) {
     const to = n ? nextFreeName(name, n) : name;
-    try {
-      await linkOrCopy(temp, join(dir, to));
+    const at = join(dir, to);
+    if (linkable) {
+      try {
+        await link(temp, at);
+        return to;
+      } catch (e) {
+        if (code(e) === 'EEXIST') continue;
+        if (!NO_LINKS.has(code(e))) throw e;
+        linkable = false;   // and the name tried just now is asked below
+      }
+    }
+    if (!(await taken(at))) {
+      await rename(temp, at);
       return to;
-    } catch (e) {
-      if (code(e) !== 'EEXIST') throw e;
     }
   }
 }
 
 // The last chunk is in. This puts a new name into the tree, so it takes its turn in the queue (G10), like every change that checks a name and then
 // uses it. Nothing in here may wait for the queue again.
-// ponytail: no fsync before the link, as nothing else here syncs; a power cut right after the last chunk can leave the file short.
+// ponytail: the file is synced but its folder is not, so a power cut right after the finish can still lose the name; sync the folder as well if
+// that ever shows.
 function finalize(app: App, user: Me, row: UploadRow): Promise<{ done: true; name: string }> {
   return mutationQueue(async () => {
     let name: string;
@@ -140,11 +156,19 @@ function finalize(app: App, user: Me, row: UploadRow): Promise<{ done: true; nam
   });
 }
 
+// What can be told without the body: the upload is this user's (404), and the chunk starts where the last one ended (409). The route asks before it
+// reads a byte, so that a request that can't be taken costs neither a buffer nor a slot. writeChunk asks again, since the upload may have moved on
+// while the request waited for a slot and sent its body.
+export function checkChunk(app: App, user: Me, id: string, offset: number) {
+  const row = ownUpload(app.db, id, user.id);
+  if (offset !== row.received) throw new HttpError(409, 'Upload out of sync');
+  return row;
+}
+
 // One chunk, which must start where the last one ended. The first is checked against the type its name claims. The chunk that completes the file ends
 // the upload ({ done, name }), the others answer how much is in. A finish that failed leaves the upload whole, and an empty chunk at the end runs it again.
 export async function writeChunk(app: App, user: Me, id: string, offset: number, body: Buffer): Promise<ChunkResult> {
-  const row = ownUpload(app.db, id, user.id);
-  if (offset !== row.received) throw new HttpError(409, 'Upload out of sync');
+  const row = checkChunk(app, user, id, offset);
   if (offset === 0 && !checkMagic(row.name, body.subarray(0, MAGIC_BYTES))) {
     await dropUpload(app.db, row);
     throw new HttpError(415, "File content doesn't match its type");

@@ -6,7 +6,7 @@ import { requireUser } from './auth.ts';
 import { makeFolder, moveItems, renameItem } from './fsops.ts';
 import { HttpError, readBody, readObject, str } from './http.ts';
 import { deletePreview, trashItems } from './trash.ts';
-import { CHUNK_MAX, cancelUpload, startUpload, writeChunk } from './uploads.ts';
+import { CHUNK_MAX, cancelUpload, checkChunk, chunkSlots, startUpload, writeChunk } from './uploads.ts';
 
 // A path and a name: a small cap keeps these from buffering megabytes. A move names a whole selection, so it keeps the default cap.
 const SMALL = 16 * 1024;
@@ -56,11 +56,22 @@ export function registerFileRoutes(app: App): void {
     return startUpload(app, user, { dir: str(body.dir), name: str(body.name), size: typeof body.size === 'number' ? body.size : 0 });
   });
 
+  // The body is a buffer of up to 16 MiB, so it is read last: first what needs no body (not this user's upload: 404, not where the last chunk ended:
+  // 409), then a place among the few chunks that are read at a time. Whatever waits or is refused has its body unread.
   router.add('PUT', '/api/upload/:id', async (ctx) => {
     const user = requireUser(ctx);
-    const chunk = await readBody(ctx, CHUNK_MAX, 'application/octet-stream', 'Chunk too large');
-    const offset = ctx.url.searchParams.get('offset') ?? '';
-    return writeChunk(app, user, ctx.params.id, /^\d+$/.test(offset) ? Number(offset) : -1, chunk);   // -1 never fits: the answer is 409
+    const given = ctx.url.searchParams.get('offset') ?? '';
+    const offset = /^\d+$/.test(given) ? Number(given) : -1;   // -1 never fits: the answer is 409
+    try {
+      checkChunk(app, user, ctx.params.id, offset);
+    } catch (e) {
+      ctx.res.setHeader('Connection', 'close');   // the body stays unread, and it may be of any length: the connection must not go on to read it
+      throw e;
+    }
+    return chunkSlots(async () => {
+      const chunk = await readBody(ctx, CHUNK_MAX, 'application/octet-stream', 'Chunk too large');
+      return writeChunk(app, user, ctx.params.id, offset, chunk);
+    });
   });
 
   router.add('DELETE', '/api/upload/:id', async (ctx) => {

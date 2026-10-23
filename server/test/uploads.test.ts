@@ -2,6 +2,8 @@ import { after, before, mock, test } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fsp, { appendFile, chmod, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { request } from 'node:http';
+import type { IncomingMessage } from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { mutationQueue } from '../fsops.ts';
@@ -33,6 +35,55 @@ function capture(t: TestContext) {
   const lines: string[] = [];
   t.mock.method(console, 'log', (s: unknown) => { lines.push(String(s)); });
   return () => lines.filter((l) => l.startsWith('{')).map((l) => { const { t: _time, ...event } = JSON.parse(l); return event; });
+}
+
+// The class behind every handle that fs.promises.open gives out, so that a test can make its writes fail or watch them.
+async function fileHandles() {
+  const probe = await fsp.open(fixture('plain.png'));
+  const handles = Object.getPrototypeOf(probe);
+  await probe.close();
+  return handles;
+}
+
+// A chunk request made by hand. fetch can't declare a length it does not send, or stop with a body half way, and a test of what the server does before
+// it reads a body, or while it reads one, needs both. The test ends `req` (or destroys it); `response` is the answer once there is one.
+function rawPut(id: string, offset: number, declared: number, who: Client = editor) {
+  const req = request(`${ta.url}/api/upload/${id}?offset=${offset}`, {
+    method: 'PUT', agent: false,
+    // keep-alive is asked for, so that a `close` in the answer is the server's doing and not the client's
+    headers: { cookie: who.cookie!, origin: ta.url, connection: 'keep-alive', 'content-type': 'application/octet-stream', 'content-length': String(declared) },
+  });
+  const response = new Promise<{ status: number; connection: string | undefined; body: any }>((resolve, reject) => {
+    const giveUp = setTimeout(() => req.destroy(new Error('no answer: the server is waiting for the body')), 5000).unref();   // a failure must not be a hang
+    req.on('error', reject);
+    req.on('response', (res) => {
+      let text = '';
+      res.setEncoding('utf8').on('data', (part) => { text += part; }).on('end', () => {
+        clearTimeout(giveUp);
+        resolve({ status: res.statusCode!, connection: res.headers.connection, body: JSON.parse(text) });
+      });
+    });
+  });
+  response.catch(() => {});   // a request the test destroys is not an unhandled rejection
+  return { req, response };
+}
+
+// Chunk requests made by hand, one at a time, each with the server's view of it: `atServer` is the request as the server has it, once its handler has gone
+// as far as it can without waiting for something (into the limiter's queue, or into the body). The server's own 'request' listener comes first, so
+// that is where things stand when the one here runs. A request still open when the test ends is destroyed, so that it can't hold a slot for the tests after.
+function byHand(t: TestContext) {
+  const open: ReturnType<typeof rawPut>[] = [];
+  const waiting: ((req: IncomingMessage) => void)[] = [];
+  const tap = (req: IncomingMessage) => { if (req.method === 'PUT') waiting.shift()?.(req); };
+  ta.app.server.on('request', tap);
+  t.after(() => { ta.app.server.off('request', tap); for (const sent of open) sent.req.destroy(); });
+  return async (id: string, offset: number, declared: number, body: Buffer, complete: boolean) => {
+    const arrived = new Promise<IncomingMessage>((resolve) => { waiting.push(resolve); });
+    const sent = rawPut(id, offset, declared);
+    open.push(sent);
+    if (complete) sent.req.end(body); else sent.req.write(body);
+    return { ...sent, atServer: await arrived };
+  };
 }
 
 before(async () => {
@@ -165,6 +216,72 @@ test('a chunk over CHUNK_MAX is a 413 and the upload stays as it was; CHUNK_MAX 
   assert.equal((await stat(join(ta.media, 'pics/other/big.jpg'))).size, CHUNK_MAX + 3);
 });
 
+test('a wrong owner or a wrong offset is refused before a byte of the body is read, whatever length the body declares', async () => {
+  const id = await begin('/Other', 'early.jpg');
+  assert.deepEqual(await (await put(editor, id, 0, jpg.subarray(0, 100))).json(), { received: 100 });
+  const declared = 100 * 1024 ** 3;                                        // 100 GiB, of which not one byte is ever sent
+  for (const [who, key, offset, status, error] of [
+    [papa, id, 100, 404, 'Not found'],                                      // somebody else's upload
+    [admin, id, 100, 404, 'Not found'],
+    [editor, 'no-such-upload', 0, 404, 'Not found'],
+    [editor, id, 0, 409, 'Upload out of sync'],                             // not where the last chunk ended
+    [editor, id, 101, 409, 'Upload out of sync'],
+  ] as const) {
+    const sent = rawPut(key, offset, declared, who);
+    sent.req.flushHeaders();
+    // An answer, though there is no body to read; and the connection closes with it, so that the 100 GiB is not read after it either.
+    assert.deepEqual(await sent.response, { status, connection: 'close', body: { error } }, `${key} at ${offset}`);
+    sent.req.destroy();
+  }
+  assert.equal(row(id).received, 100);                                      // none of it touched the upload
+  assert.deepEqual(await (await put(editor, id, 100, jpg.subarray(100))).json(), { done: true, name: 'early.jpg' });
+});
+
+test('at most 4 chunk bodies are read at once, whoever sends them; the others wait unread', async (t) => {
+  const send = byHand(t);
+  const ids = await Promise.all([0, 1, 2, 3, 4].map((i) => begin('/Other', `slot${i}.jpg`)));
+  // Four chunks under way: the head of each body is in and the rest is not, so each holds a slot.
+  const holders = [];
+  for (const id of ids.slice(0, 4)) holders.push(await send(id, 0, jpg.length, jpg.subarray(0, 100), false));
+  // A fifth, with all of its body ready. It gets as far as the limiter and not a byte further.
+  const fifth = await send(ids[4], 0, jpg.length, jpg, true);
+  assert.equal(fifth.atServer.readableDidRead, false);
+  for (let turn = 0; turn < 25; turn++) await new Promise((resolve) => setImmediate(resolve));   // time for anything that would read it to do so
+  assert.equal(fifth.atServer.readableDidRead, false);
+  // One of the four is done, and its slot goes to the fifth.
+  holders[0].req.end(jpg.subarray(100));
+  assert.equal((await holders[0].response).status, 200);
+  assert.deepEqual((await fifth.response).body, { done: true, name: 'slot4.jpg' });
+  assert.equal(fifth.atServer.readableDidRead, true);
+  for (const holder of holders.slice(1)) {
+    holder.req.end(jpg.subarray(100));
+    assert.equal((await holder.response).status, 200);
+  }
+});
+
+test('a chunk that waited for a slot is checked again when it gets one: a duplicate neither clobbers nor ends an upload that moved on', async (t) => {
+  const send = byHand(t);
+  const ids = await Promise.all([0, 1, 2, 3, 4].map((i) => begin('/Other', `dup${i}.jpg`)));
+  const holders = [];
+  for (const id of ids.slice(0, 4)) holders.push(await send(id, 0, jpg.length, jpg.subarray(0, 100), false));
+  // Two chunks for the same place in the fifth upload. Both pass the check at the door, as nothing is in yet, and wait in turn: the real one first,
+  // then one whose head is not a JPEG's, which would end the upload if it were taken for a first chunk.
+  const first = await send(ids[4], 0, 100, jpg.subarray(0, 100), true);
+  const second = await send(ids[4], 0, 100, Buffer.alloc(100, 0xee), true);
+  holders[0].req.end(jpg.subarray(100));
+  assert.equal((await holders[0].response).status, 200);
+  assert.deepEqual((await first.response).body, { received: 100 });
+  const { status, body } = await second.response;
+  assert.deepEqual({ status, body }, { status: 409, body: { error: 'Upload out of sync' } });          // from the second look: it was refused after its body was read
+  assert.equal(row(ids[4]).received, 100);                                  // it is still there, and
+  assert.deepEqual((await readFile(row(ids[4]).temp_abs)).subarray(0, 100), jpg.subarray(0, 100));   // is still the real chunk's
+  assert.deepEqual(await (await put(editor, ids[4], 100, jpg.subarray(100))).json(), { done: true, name: 'dup4.jpg' });
+  for (const holder of holders.slice(1)) {
+    holder.req.end(jpg.subarray(100));
+    assert.equal((await holder.response).status, 200);
+  }
+});
+
 test('an upload is its owner\'s alone: the id is a key, never a path (R1)', async () => {
   const id = await begin('/Fam', 'mine.jpg');
   await put(editor, id, 0, jpg.subarray(0, 100));
@@ -210,9 +327,7 @@ test('a chunk goes in at its offset, never appended, and the file is cut at the 
 
 test('two requests with the same chunk: one moves the upload on, the other is out of sync', async (t) => {
   const id = await begin('/Other', 'twice.jpg');
-  const probe = await fsp.open(fixture('plain.png'));
-  const handles = Object.getPrototypeOf(probe);
-  await probe.close();
+  const handles = await fileHandles();
   // Both requests are let through the offset check before either of them writes, which is the order that matters here.
   const write = handles.write;
   let arrived = 0, openGate = () => {};
@@ -291,17 +406,59 @@ test('the last chunk waits in the mutation queue, and does not wait for itself (
   }
 });
 
-test('where the disk cannot hard-link, the file is copied, and still never over a name in use', async (t) => {
+test('where the disk cannot hard-link, the whole file is renamed to the first free name, never over a name in use', async (t) => {
+  const handles = await fileHandles();
+  const syncs = t.mock.method(handles, 'sync');                            // only watched
   const noLinks = t.mock.method(fsp, 'link', async () => { throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' }); });
-  syncBuiltinESMExports();                                                  // the named import in uploads.ts follows the mock
-  t.after(() => { noLinks.mock.restore(); syncBuiltinESMExports(); });
+  const copied = t.mock.method(fsp, 'copyFile');                           // only watched: nothing is copied any more
+  const rename = fsp.rename;
+  const seen: { temp: number; nameFree: boolean; synced: number }[] = [];
+  const renamed = t.mock.method(fsp, 'rename', async (from: string, to: string) => {
+    seen.push({ temp: (await stat(from)).size, nameFree: await stat(to).then(() => false, () => true), synced: syncs.mock.callCount() });
+    return rename(from, to);
+  });
+  syncBuiltinESMExports();                                                  // the named imports in uploads.ts follow the mocks
+  t.after(() => { for (const m of [syncs, noLinks, copied, renamed]) m.mock.restore(); syncBuiltinESMExports(); });
+  await writeFile(join(ta.media, 'pics/other/ren.jpg'), 'not ours');         // there already
   const other = Buffer.concat([jpg, Buffer.from('other')]);
-  assert.deepEqual(await uploaded('/Other', 'copy.jpg'), { done: true, name: 'copy.jpg' });
-  assert.deepEqual(await uploaded('/Other', 'copy.jpg', other), { done: true, name: 'copy (1).jpg' });
-  assert.deepEqual(await readFile(join(ta.media, 'pics/other/copy.jpg')), jpg);
-  assert.deepEqual(await readFile(join(ta.media, 'pics/other/copy (1).jpg')), other);
-  assert.ok(noLinks.mock.callCount() >= 3);
+  assert.deepEqual(await uploaded('/Other', 'ren.jpg'), { done: true, name: 'ren (1).jpg' });
+  assert.deepEqual(await uploaded('/Other', 'ren.jpg', other), { done: true, name: 'ren (2).jpg' });
+  assert.equal(await readFile(join(ta.media, 'pics/other/ren.jpg'), 'utf8'), 'not ours');
+  assert.deepEqual(await readFile(join(ta.media, 'pics/other/ren (1).jpg')), jpg);
+  assert.deepEqual(await readFile(join(ta.media, 'pics/other/ren (2).jpg')), other);
+  // When it is renamed the file is whole and synced, and the name it goes to is free: it is never seen half written, and nothing is replaced.
+  assert.deepEqual(seen, [{ temp: jpg.length, nameFree: true, synced: 1 }, { temp: other.length, nameFree: true, synced: 2 }]);
+  assert.equal(copied.mock.callCount(), 0);
   assert.deepEqual(await temps('pics/other'), []);
+});
+
+test('the file is synced once, after the cut at the declared size and before it gets its name (a power cut must not leave it short)', async (t) => {
+  const handles = await fileHandles();
+  const order: string[] = [];
+  const watch = (object: any, method: string, label: string) => {
+    const original = object[method];
+    return t.mock.method(object, method, function (this: unknown, ...args: unknown[]) { order.push(label); return original.apply(this, args); });
+  };
+  const mocks = [watch(handles, 'truncate', 'cut'), watch(handles, 'sync', 'sync'), watch(fsp, 'link', 'link')];
+  syncBuiltinESMExports();
+  t.after(() => { for (const m of mocks) m.mock.restore(); syncBuiltinESMExports(); });
+  const id = await begin('/Other', 'durable.jpg');
+  assert.deepEqual(await (await put(editor, id, 0, jpg.subarray(0, 100))).json(), { received: 100 });
+  assert.deepEqual(order, []);                                              // not for a chunk that leaves the file short of its size
+  assert.deepEqual(await (await put(editor, id, 100, jpg.subarray(100))).json(), { done: true, name: 'durable.jpg' });
+  assert.deepEqual(order, ['cut', 'sync', 'link']);
+});
+
+test('a sync that fails fails the chunk: the file does not get its name, and the same chunk can be sent again', async (t) => {
+  const handles = await fileHandles();
+  const id = await begin('/Other', 'unsynced.jpg');
+  const broken = t.mock.method(handles, 'sync', async () => { throw Object.assign(new Error('input/output error'), { code: 'EIO' }); });
+  const failed = await put(editor, id, 0, jpg);
+  broken.mock.restore();
+  assert.equal(failed.status, 500);                                         // not "done": the bytes may not be on the disk
+  assert.equal(await exists('pics/other/unsynced.jpg'), false);
+  assert.equal(row(id).received, 0);
+  assert.deepEqual(await (await put(editor, id, 0, jpg)).json(), { done: true, name: 'unsynced.jpg' });
 });
 
 test('a finish that failed leaves the upload whole, and an empty chunk at the end runs it again', async (t) => {
@@ -320,9 +477,7 @@ test('a finish that failed leaves the upload whole, and an empty chunk at the en
 });
 
 test('a full disk ends the upload: the temp file and the row go, and it is a 507', async (t) => {
-  const probe = await fsp.open(fixture('plain.png'));
-  const handles = Object.getPrototypeOf(probe);
-  await probe.close();
+  const handles = await fileHandles();
   const id = await begin('/Other', 'full.jpg');
   const noSpace = t.mock.method(handles, 'write', async () => { throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' }); });
   const r = await put(editor, id, 0, jpg);
@@ -333,9 +488,7 @@ test('a full disk ends the upload: the temp file and the row go, and it is a 507
 });
 
 test('a write that stops short is carried on, and one that makes no progress is a failure, not a hang', async (t) => {
-  const probe = await fsp.open(fixture('plain.png'));
-  const handles = Object.getPrototypeOf(probe);
-  await probe.close();
+  const handles = await fileHandles();
   const write = handles.write;
   const short = t.mock.method(handles, 'write', function (this: unknown, buf: Buffer, offset: number, length: number, position: number) {
     return write.call(this, buf, offset, Math.min(length, 7), position);          // never more than 7 bytes of what it was asked to write
