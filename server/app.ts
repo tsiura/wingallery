@@ -10,11 +10,14 @@ import type { DB } from './db.ts';
 import { HttpError, Router, clientInfo, parseCookies, securityHeaders, sendJson } from './http.ts';
 import type { Ctx } from './http.ts';
 import { log } from './log.ts';
+import { registerMediaRoutes } from './mediaroutes.ts';
 import { photoPool } from './meta.ts';
+import { createThumbnailer } from './thumbs.ts';
+import type { Thumbnailer } from './thumbs.ts';
 import { countUsers } from './users.ts';
 
 // setupToken is the first-run link: set when the database has no users, cleared once the administrator exists.
-export interface App { cfg: Config; db: DB; router: Router; limiter: LoginLimiter; server: Server; setupToken: string | null; close(): Promise<void> }
+export interface App { cfg: Config; db: DB; router: Router; limiter: LoginLimiter; thumbs: Thumbnailer; server: Server; setupToken: string | null; close(): Promise<void> }
 
 function fail(res: ServerResponse, err: unknown): void {
   const known = err instanceof HttpError;
@@ -77,7 +80,7 @@ export function createApp(cfg: Config, db: DB): App {
   const server = createServer((req, res) => { void handle(req, res); });
   let closing: Promise<void> | undefined;
   const app: App = {
-    cfg, db, router, limiter, server,
+    cfg, db, router, limiter, thumbs: createThumbnailer(cfg), server,
     setupToken: countUsers(db) === 0 ? randomBytes(24).toString('base64url') : null,
     close: () => closing ??= new Promise<void>((resolve) => {
       // stops accepting and drops idle keep-alive sockets; requests in flight finish first, and then the photo workers that are idle end too
@@ -87,5 +90,6 @@ export function createApp(cfg: Config, db: DB): App {
   registerAuthRoutes(app);
   registerAdminRoutes(app);
   registerBrowseRoutes(app);
+  registerMediaRoutes(app);
   return app;
 }
