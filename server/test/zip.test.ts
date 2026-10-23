@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { requireUser } from '../auth.ts';
 import { readForm } from '../http.ts';
 import { ZIP_LIMIT, streamZip } from '../zip.ts';
-import { seedTree, startTestApp } from './helpers.ts';
+import { seedTree, startTestApp, waitUntil } from './helpers.ts';
 import type { Client, TestApp } from './helpers.ts';
 
 const FORM = 'application/x-www-form-urlencoded';
@@ -233,15 +233,26 @@ const post = (paths: string[], signal?: AbortSignal) =>
 test('a client that hangs up mid-zip costs no error line and no open file', { skip: !existsSync('/proc/self/fd'), timeout: 30_000 }, async (t) => {
   const { big } = await bigFolder('hang', 512);
   const lines = logged(t);
+  // A stream that nobody closes is closed by the garbage collector a second or so later, and the wait below would take that for the server's doing. So the
+  // test keeps hold of every stream the server opens on a file, and a file the server leaves open stays open.
+  const kept: { bytesRead: number }[] = [];
+  const probe = await fsp.open(big), files = Object.getPrototypeOf(probe), create = files.createReadStream;
+  await probe.close();
+  t.mock.method(files, 'createReadStream', function (this: unknown, ...args: unknown[]) { const stream = create.apply(this, args); kept.push(stream); return stream; });
   const gone = new Promise<void>((resolve) => ta.app.server.once('request', (_req, res) => { res.on('close', () => resolve()); }));   // the next request is the zip
   const hangUp = new AbortController();
   const r = await post(['/lab/hang'], hangUp.signal);
   assert.equal(r.status, 200);
   await r.body!.getReader().read();   // the server is streaming now
+  // The file is being read, not just opened: a hang-up before the first read finds nothing to leave open, and the test would pass whatever the server does.
+  await waitUntil(() => kept.some((stream) => stream.bytesRead > 0));
+  assert.ok(kept.some((stream) => stream.bytesRead > 0), 'the file is being read');
   assert.equal(holdingOpen(big), 1);
   hangUp.abort();
   await gone;
-  await sleep(50);                    // the stream's failure reaches the handler a few ticks later
+  // The stream's failure reaches the handler some ticks later, and the handler closes the file; how many ticks depends on the load, so this waits for it
+  // (a file that is never closed still fails below, after the 2 s). Any error line is written before the file is closed, so there is none by then.
+  await waitUntil(() => holdingOpen(big) === 0);
   assert.equal(holdingOpen(big), 0, 'the file is closed');
   assert.deepEqual(lines, []);
   assert.equal((await zip(papa, ['/Fam/a.jpg'])).status, 200, 'the server carries on');
