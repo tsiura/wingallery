@@ -1,4 +1,4 @@
-// How the design writes dates, sizes, durations and avatars. en-US, whatever the browser's locale.
+// How the design writes dates, sizes, durations, counts and avatars. en-US, whatever the browser's locale.
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const pad = (n: number, width = 2): string => String(n).padStart(width, '0');
@@ -15,6 +15,9 @@ export function fmtEpoch(ms: number): string {
   const d = new Date(ms);
   return fmtDate(`${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`);
 }
+
+// "1 item", "2 items": the count with the word that goes with it.
+export const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
 export const fmtSize = (bytes: number): string =>
   bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.round(bytes / 1e3)} KB`;

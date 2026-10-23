@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { avatarColor, fmtDate, fmtDur, fmtEpoch, fmtSize, initials } from './format.ts';
+import { avatarColor, fmtDate, fmtDur, fmtEpoch, fmtSize, initials, plural } from './format.ts';
 
 test('formatting matches the design', () => {
   assert.equal(fmtDate('2026-03-14T09:00:00'), 'Mar 14, 2026  09:00');
@@ -15,4 +15,8 @@ test('instants and fractions', () => {
   assert.equal(fmtDur(98.4), '1:38');   // ffprobe gives fractions; the design's m:ss never sees them
   assert.equal(fmtDate('2026-12-01T00:05:09'), 'Dec 1, 2026  00:05');
   assert.equal(initials('Иван Петров Сидоров'), 'ИП');
+});
+
+test('plural: one is singular, anything else is not', () => {
+  assert.deepEqual([1, 0, 2, 12].map((n) => plural(n, 'item', 'items')), ['1 item', '0 items', '2 items', '12 items']);
 });

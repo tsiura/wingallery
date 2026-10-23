@@ -1,6 +1,7 @@
 // What the toolbar's actions are for: which of them the user's rights and the selection allow, the words of the delete confirmation, and what a download sends.
 
 import type { DeletePreview, Entry, Rights } from '../../../shared/types.ts';
+import { plural } from './format.ts';
 import { joinV } from './route.ts';
 
 export interface ActionState { upload: boolean; newFolder: boolean; rename: boolean; move: boolean; delete: boolean; download: boolean }
@@ -38,8 +39,6 @@ export function scopeRootOf(vpath: string): string | null {
   const first = vpath.split('/')[1];
   return first ? '/' + first : null;
 }
-
-const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
 // The confirmation of a delete (spec 4.4): how many items go to the Recycle Bin, how many files that the gallery doesn't show go with the folders among them,
 // and, for a member, who can bring them back. `detail` is lines, joined with a newline.

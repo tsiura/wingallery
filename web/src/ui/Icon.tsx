@@ -1,14 +1,14 @@
 // The design's icons as inline SVG (16x16 grid), and the app's logo. Strokes and fills take the text colour (`color`), except the folders, which are yellow
 // (`folderFlat` is the address bar's, in one tone; `folder` is the tree's, `folderItem` the item list's, a little deeper: design lines 187 and 424).
 // The icons the design doesn't have (settings, user, upload, newFolder, rename, move, delete, download, menu, fullscreen, photo, video, check) are drawn the
-// same way.
+// same way; the shield is the design's (line 416, the administrators' note in Settings).
 
 import type { ReactNode } from 'react';
 
 export type IconName =
   | 'folder' | 'folderItem' | 'folderFlat' | 'back' | 'forward' | 'up' | 'search' | 'play' | 'pause' | 'prev' | 'next' | 'close' | 'large' | 'medium' | 'details'
   | 'sort' | 'select' | 'lock' | 'settings' | 'user' | 'upload' | 'newFolder' | 'rename' | 'move' | 'delete' | 'download' | 'menu' | 'fullscreen' | 'photo' | 'video'
-  | 'check';
+  | 'check' | 'shield';
 
 const line = (width: number, shapes: ReactNode) => (
   <g fill="none" stroke="currentColor" strokeWidth={width} strokeLinecap="round" strokeLinejoin="round">{shapes}</g>
@@ -55,6 +55,7 @@ const ICONS: Record<IconName, ReactNode> = {
   photo: line(1.3, <><rect x="1.5" y="3" width="13" height="10" rx="1.5" /><path d="M3.5 11l3-3.2 2.2 2.2 1.6-1.6L13 11" /></>),
   video: line(1.3, <><rect x="1.5" y="3" width="13" height="10" rx="1.5" /><path d="M6.6 6v4l3.4-2z" /></>),
   check: line(1.8, <path d="M3.5 8.5l3 3 6-6.5" />),
+  shield: line(1.3, <><path d="M8 1.5l5.5 2v4c0 3.3-2.3 5.8-5.5 7-3.2-1.2-5.5-3.7-5.5-7v-4z" /><path d="M5.5 8l1.8 1.8L10.8 6.3" /></>),
 };
 
 export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {

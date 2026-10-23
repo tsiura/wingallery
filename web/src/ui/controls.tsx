@@ -1,6 +1,6 @@
 // The design's controls. Looks are copied from docs/design/Gallery Explorer.dc.html (SEG line 521, the toggle line 254, the modal lines 218-266).
 
-import { useEffect, useRef } from 'react';
+import { Fragment, useEffect, useRef } from 'react';
 import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, ReactNode } from 'react';
 import { avatarColor, initials } from '../lib/format.ts';
 
@@ -43,9 +43,9 @@ export function Toggle({ checked, onChange, label, style }: { checked: boolean; 
   );
 }
 
-// `type` is 'button' unless a form's submit button says otherwise.
-export function Button({ variant = 'default', ...rest }: { variant?: 'primary' | 'default' } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className'>) {
-  return <button type="button" className={variant === 'primary' ? 'btn primary' : 'btn'} {...rest} />;
+// `type` is 'button' unless a form's submit button says otherwise. `danger` is the red outline of the design's "Remove user".
+export function Button({ variant = 'default', ...rest }: { variant?: 'primary' | 'danger' | 'default' } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className'>) {
+  return <button type="button" className={variant === 'default' ? 'btn' : `btn ${variant}`} {...rest} />;
 }
 
 // A label above a text box.
@@ -66,6 +66,11 @@ export function Avatar({ id, name, size = 24 }: { id: number; name: string; size
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }}>{initials(name)}</div>
   );
+}
+
+// A path on disk that a narrow cell may wrap after any slash. (A zero-width space would do that too, but it would be copied along with the text.)
+export function Path({ text }: { text: string }) {
+  return text.split('/').map((part, i) => <Fragment key={i}>{i > 0 && <>/<wbr /></>}{part}</Fragment>);
 }
 
 // A card in the middle of the window over a dimmed page, the design's modal. It is a modal <dialog>, so the focus stays inside it, the page behind is inert

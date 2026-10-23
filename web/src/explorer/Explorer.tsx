@@ -9,6 +9,7 @@ import { applyClick, NO_SELECTION, pruneSel, selectAll } from '../lib/selection.
 import type { Mods, Sel } from '../lib/selection.ts';
 import { cycleSort, sortEntries } from '../lib/sort.ts';
 import type { SortKey } from '../lib/sort.ts';
+import { Settings } from '../settings/Settings.tsx';
 import { useSlideshow } from '../slideshow/useSlideshow.tsx';
 import { useAfterClose } from '../ui/hooks.ts';
 import { CommandBar } from './CommandBar.tsx';
@@ -16,6 +17,7 @@ import { Items } from './Items.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { StatusBar } from './StatusBar.tsx';
 import { TitleBar } from './TitleBar.tsx';
+import type { SettingsTab } from './TitleBar.tsx';
 import { Toolbar, ToolbarActions } from './Toolbar.tsx';
 import { Uploads } from './Uploads.tsx';
 import { useFileActions } from './useFileActions.tsx';
@@ -30,8 +32,8 @@ function Message({ children }: { children: ReactNode }) {
 // The actions on the folder's items are here too, in two pieces of their own: `Uploads` (the upload queue, the drop, the progress panel) and `useFileActions` (new
 // folder, rename, move, delete, download: the bar's buttons and the keys ask, the dialogs answer). A file opens in the viewer and the bar's Slideshow asks how to play:
 // `useSlideshow`.
-// `onMeChange` is for the settings window, which changes the signed-in user's own preferences.
-export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; onSignOut(): Promise<void> }) {
+// The settings window (`Settings`) opens from the account menu, on the tab that asked. `onMeChange` is for it: it changes the signed-in user's own name and preferences.
+export function Explorer({ me, onMeChange, onSignOut }: { me: Me; onMeChange(me: Me): void; onSignOut(): Promise<void> }) {
   const [vpath, setVpath] = useState(() => vpathFromLocation(location.pathname));
   const [place, setPlace] = useState(() => placeAt(history.state));
   const [listing, setListing] = useState<Listing | null>(null);
@@ -39,6 +41,7 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
   const [query, setQuery] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [settings, setSettings] = useState<SettingsTab | null>(null);   // the settings window while it is open: the tab it shows
   const [view, setView] = useState<ViewMode>(me.prefs.defaultView);   // the Settings window edits the preference; the toolbar's switch is for this visit only
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'name', dir: 1 });
   const [rawSel, setRawSel] = useState<Sel>(NO_SELECTION);   // what was clicked, including names that a search or a reload has since taken out of sight: never act on it, `live` is the selection
@@ -133,6 +136,14 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
   // button has it back, or the item is gone) goes to the pane.
   useAfterClose(slide.active, () => { if (!pane.current?.contains(document.activeElement)) focusPane(); });
 
+  // The default view is what the toolbar's switch starts from, and a new one is the view from now on, as in the design, where the two are one setting.
+  const changeMe = (next: Me) => {
+    if (next.prefs.defaultView !== me.prefs.defaultView) setView(next.prefs.defaultView);
+    onMeChange(next);
+  };
+  // What the window did to the disk (an item restored from the Recycle Bin) is in the folder when it is shut.
+  const closeSettings = () => { setSettings(null); void reload(); };
+
   const click = (name: string, mods: Mods) => setRawSel((s) => applyClick(pruneSel(s, order), order, name, mods));
   const everything = () => setRawSel(selectAll(order));
   // A folder opens here (a share whose folder is gone can't be opened), a file in the viewer.
@@ -143,8 +154,7 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#eef1f5', overflow: 'hidden' }}>
-      {/* The settings window is its own piece of work; until it exists the account menu's entries only close the menu. */}
-      <TitleBar me={me} onOpenSettings={() => {}} onSignOut={onSignOut} />
+      <TitleBar me={me} onOpenSettings={setSettings} onSignOut={onSignOut} />
       <CommandBar vpath={vpath} canBack={canBack(place)} canForward={canForward(place)} onBack={() => history.back()} onForward={() => history.forward()} onUp={up}
         onNavigate={navigate} query={query} onQuery={setQuery} onMenu={() => setDrawerOpen(true)} />
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
@@ -183,6 +193,7 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
       <Uploads area={main} picker={picker} vpath={vpath} canUpload={actions.upload} onNotice={ops.setNotice} onUploaded={reload} onPicked={focusPane} />
       {ops.dialogs}
       {slide.ui}
+      {settings && <Settings me={me} tab={settings} onTab={setSettings} onClose={closeSettings} onMeChange={changeMe} onSignOut={onSignOut} />}
     </div>
   );
 }

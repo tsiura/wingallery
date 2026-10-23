@@ -31,7 +31,7 @@ export function Frame({ title, sub, gap = 14, footer, onSubmit, children, ref }:
 export const Alert = ({ message }: { message: string }) => (message ? <div role="alert" style={{ color: '#a4373a' }}>{message}</div> : null);
 
 // A request in a dialog: `busy` while it is out, the server's message in `error` when it is refused, and `onClose` once it has gone through.
-function useSubmit(action: () => Promise<void>, onClose: () => void) {
+export function useSubmit(action: () => Promise<void>, onClose: () => void) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   async function submit(): Promise<void> {
@@ -48,7 +48,7 @@ function useSubmit(action: () => Promise<void>, onClose: () => void) {
   return { busy, error, submit };
 }
 
-const Footer = ({ busy, ready = true, label, onClose }: { busy: boolean; ready?: boolean; label: string; onClose(): void }) => (
+export const Footer = ({ busy, ready = true, label, onClose }: { busy: boolean; ready?: boolean; label: string; onClose(): void }) => (
   <>
     <Button onClick={onClose} disabled={busy}>Cancel</Button>
     <Button variant="primary" type="submit" disabled={busy || !ready}>{label}</Button>
@@ -56,23 +56,26 @@ const Footer = ({ busy, ready = true, label, onClose }: { busy: boolean; ready?:
 );
 
 // A name to type (new folder, rename). `onSubmit` makes the request, and throws what the server said when it is refused. With `selectBase` the name without its
-// extension is selected, so that typing over it keeps the extension.
-export function PromptDialog({ title, label, initial, selectBase, submitLabel, onSubmit, onClose }: {
-  title: string; label: string; initial: string; selectBase?: boolean; submitLabel: string; onSubmit(value: string): Promise<void>; onClose(): void;
+// extension is selected, so that typing over it keeps the extension. With `secret` the box is a password box for the account of that username (a new password
+// for a user); the username is in the form, out of sight, for the browser's password manager.
+export function PromptDialog({ title, label, initial, selectBase, secret, submitLabel, onSubmit, onClose }: {
+  title: string; label: string; initial: string; selectBase?: boolean; secret?: { username: string }; submitLabel: string; onSubmit(value: string): Promise<void>; onClose(): void;
 }) {
   const [value, setValue] = useState(initial);
   const { busy, error, submit } = useSubmit(() => onSubmit(value), onClose);
   const form = useRef<HTMLFormElement>(null);
   // Dialog opens itself in its own effect, which runs before this one (a child's does), and a field can be selected once the dialog is open.
   useEffect(() => {
-    const field = form.current?.querySelector('input');
+    const field = form.current?.querySelector<HTMLInputElement>('input:not([hidden])');
     field?.focus();
     field?.setSelectionRange(0, selectBase ? baseLength(initial) : initial.length);
   }, []);
   return (
     <Dialog label={title} onClose={onClose}>
       <Frame ref={form} title={title} onSubmit={submit} footer={<Footer busy={busy} label={submitLabel} onClose={onClose} />}>
-        <Field label={label} value={value} onChange={(e) => setValue(e.target.value)} disabled={busy} autoComplete="off" spellCheck={false} />
+        {secret && <input type="text" name="username" value={secret.username} autoComplete="username" readOnly hidden />}
+        <Field label={label} value={value} onChange={(e) => setValue(e.target.value)} disabled={busy} type={secret ? 'password' : 'text'}
+          autoComplete={secret ? 'new-password' : 'off'} spellCheck={false} />
         <Alert message={error} />
       </Frame>
     </Dialog>
