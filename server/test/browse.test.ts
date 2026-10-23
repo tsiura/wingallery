@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync } from 'node:fs';
-import { chmod, copyFile, mkdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, stat, symlink, truncate, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Me } from '../../shared/types.ts';
 import { pLimit } from '../limit.ts';
@@ -26,7 +26,8 @@ const addShare = (userId: number, alias: string, relPath: string, create = false
 
 // A HEIC shell with just the boxes exifr and image-size read: ispe says 64x64, as image-size misreads a cropped file; the Exif item says w x h
 // and 2021-06-15 12:34:56. `pad` bytes of stand-in picture data come before the Exif item in mdat, as when a writer stores the Exif after the image.
-function heicWithExif(w: number, h: number, orientation: number, pad = 0): Buffer {
+// `declared` replaces the length the iloc box gives the Exif item, as a crafted file would.
+function heicWithExif(w: number, h: number, orientation: number, pad = 0, declared?: number): Buffer {
   const u16 = (n: number) => { const b = Buffer.alloc(2); b.writeUInt16BE(n); return b; };
   const u32 = (...n: number[]) => { const b = Buffer.alloc(4 * n.length); n.forEach((v, i) => b.writeUInt32BE(v, 4 * i)); return b; };
   const box = (type: string, ...body: Buffer[]) => { const data = Buffer.concat(body); return Buffer.concat([u32(8 + data.length), Buffer.from(type, 'latin1'), data]); };
@@ -40,10 +41,28 @@ function heicWithExif(w: number, h: number, orientation: number, pad = 0): Buffe
   const ftyp = box('ftyp', Buffer.from('heic', 'latin1'), u32(0), Buffer.from('mif1heic', 'latin1'));
   const meta = (at: number) => box('meta', u32(0),
     box('iinf', u32(0), u16(2), infe(1, 'hvc1'), infe(2, 'Exif')),
-    box('iloc', u32(0), Buffer.from([0x44, 0x00]), u16(1), u16(2), u16(0), u16(1), u32(at, exif.length)),
+    box('iloc', u32(0), Buffer.from([0x44, 0x00]), u16(1), u16(2), u16(0), u16(1), u32(at, declared ?? exif.length)),
     box('iprp', box('ipco', box('ispe', u32(0, 64, 64)))));
   // the Exif item sits in mdat, past its 8-byte header and the padding
   return Buffer.concat([ftyp, meta(ftyp.length + meta(0).length + 8 + pad), box('mdat', Buffer.alloc(pad, 0xab), exif)]);
+}
+
+// The start of a PNG that ends in an eXIf chunk whose length field says `declared` bytes, as a crafted file would.
+function pngDeclaring(declared: number): Buffer {
+  const u32 = (...n: number[]) => { const b = Buffer.alloc(4 * n.length); n.forEach((v, i) => b.writeUInt32BE(v, 4 * i)); return b; };
+  return Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), u32(13), Buffer.from('IHDR', 'latin1'), u32(32, 16), Buffer.from([8, 2, 0, 0, 0]), u32(0),
+    u32(declared), Buffer.from('eXIf', 'latin1')]);
+}
+
+// How far above where it started the process's arrayBuffers memory climbs while `run` goes on, looked at on every turn of the event loop.
+async function peakArrayBuffers(run: () => Promise<unknown>): Promise<number> {
+  const start = process.memoryUsage().arrayBuffers;
+  let peak = start, going = true;
+  const watch = (async () => {
+    while (going) { peak = Math.max(peak, process.memoryUsage().arrayBuffers); await new Promise((resolve) => setImmediate(resolve)); }
+  })();
+  try { await run(); } finally { going = false; await watch; }
+  return peak - start;
 }
 
 before(async () => {
@@ -126,6 +145,19 @@ test('extractMeta: a photo longer than the first 512 KB is still read in full, a
   const long = join(dir, 'long.jpg');
   await writeFile(long, Buffer.concat([await readFile(fixture('exif-rot6.jpg')), Buffer.alloc(600 * 1024)]));
   assert.deepEqual(await extractMeta(long, 'photo', 0), { width: 48, height: 64, takenAt: '2025-12-24T18:00:00', duration: null });
+});
+test('extractMeta: a crafted photo over the size cap can not make exifr read the whole file', async () => {
+  // exifr reads as many bytes as the file says its Exif data has, clamped only to the file's size; members can upload such a file
+  const MB = 1024 * 1024;
+  const dir = await tempDir();
+  const heic = join(dir, 'crafted.heic'), png = join(dir, 'crafted.png');
+  await writeFile(heic, heicWithExif(4000, 3000, 6, 0, 100 * MB));
+  await writeFile(png, pngDeclaring(100 * MB));
+  for (const f of [heic, png]) await truncate(f, 128 * MB);   // sparse: the 128 MB are never written
+  for (const f of [heic, png]) {
+    const grown = await peakArrayBuffers(() => extractMeta(f, 'photo', 0));
+    assert.ok(grown < 8 * MB, `${f}: arrayBuffers memory grew by ${(grown / MB).toFixed(1)} MB`);
+  }
 });
 
 test('extractMeta leaves no file open, whatever the file holds', { skip: !existsSync('/proc/self/fd') }, async () => {

@@ -35,13 +35,20 @@ const EXIF = { pick: ['DateTimeOriginal', 'Orientation', 'ExifImageWidth', 'Exif
 
 const HEAD_BYTES = 512 * 1024;   // all that image-size's own file reader looks at
 
-// The first bytes of a photo, read in one open that is closed here. image-size parses them in memory, and so does exifr for a file that fits
-// in them: given the path of a file under two bytes, exifr leaves its file handle open, which Node reports when it collects it (DEP0137).
-async function readHead(abs: string): Promise<Buffer> {
+// exifr reads as many bytes as the file says its Exif data has (a HEIC iloc extent, a PNG chunk length), clamped only to the file's size, so a
+// crafted file makes it read all of it. A file this size or smaller may still go to exifr by path, since real photos are far smaller.
+// ponytail: the worst case is 4 x 64 MiB held at once (pLimit runs four extractions); a bigger file is parsed from its head alone, so a late
+// Exif item is missed. Lower the cap if that memory matters more than a late Exif item in a huge file.
+const EXIF_PATH_MAX = 64 * 1024 * 1024;
+
+// The first bytes of a photo and its size, from one open that is closed here. image-size parses the head in memory, and so does exifr for a file
+// that fits in it: given the path of a file under two bytes, exifr leaves its file handle open, which Node reports when it collects it (DEP0137).
+async function readHead(abs: string): Promise<{ head: Buffer; size: number }> {
   const file = await open(abs, 'r');
   try {
+    const { size } = await file.stat();
     const { buffer, bytesRead } = await file.read(Buffer.alloc(HEAD_BYTES), 0, HEAD_BYTES, 0);
-    return buffer.subarray(0, bytesRead);
+    return { head: buffer.subarray(0, bytesRead), size };
   } finally {
     await file.close();
   }
@@ -57,16 +64,16 @@ async function attempt<T>(read: () => T | Promise<T>): Promise<T | null> {
 }
 
 async function photoMeta(abs: string, mtimeMs: number): Promise<Meta> {
-  const head = await attempt(() => readHead(abs));
-  // A longer file goes to exifr by path, which reads on as far as it needs: a HEIC may keep its Exif item anywhere in mdat, past the head.
-  // That file is over two bytes, so the leak above can't happen.
-  const exif = head ? await attempt(() => exifr.parse(head.length < HEAD_BYTES ? head : abs, EXIF)) : null;
+  const src = await attempt(() => readHead(abs));
+  // A file longer than the head, up to the cap, goes to exifr by path, which reads on as far as it needs: a HEIC may keep its Exif item anywhere
+  // in mdat, past the head. Such a file is over two bytes, so the leak above can't happen. The rest are parsed from the head in memory.
+  const exif = src ? await attempt(() => exifr.parse(src.size > HEAD_BYTES && src.size <= EXIF_PATH_MAX ? abs : src.head, EXIF)) : null;
   let width: number | null = null, height: number | null = null;
   // image-size misreads HEIC/HEIF that carry a 'clap' crop (our sample is 64x48 and comes out 63x64), so their EXIF size goes first (R1).
   if (mediaTypeOf(abs)?.convert) [width, height] = [positive(exif?.ExifImageWidth), positive(exif?.ExifImageHeight)];
-  if (head && (width === null || height === null)) {
-    const size = await attempt(() => imageSize(head));
-    [width, height] = [positive(size?.width), positive(size?.height)];
+  if (src && (width === null || height === null)) {
+    const dims = await attempt(() => imageSize(src.head));
+    [width, height] = [positive(dims?.width), positive(dims?.height)];
   }
   const turn = exif?.Orientation;
   if (typeof turn === 'number' && turn >= 5 && turn <= 8) [width, height] = [height, width];   // turned by a quarter: shown the other way round
