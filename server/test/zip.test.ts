@@ -2,8 +2,12 @@ import { after, before, test } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readlinkSync } from 'node:fs';
-import { chmod, rm, symlink, truncate, utimes, writeFile } from 'node:fs/promises';
+import fsp, { chmod, mkdir, rm, symlink, truncate, utimes, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
+import { requireUser } from '../auth.ts';
+import { readForm } from '../http.ts';
+import { ZIP_LIMIT, streamZip } from '../zip.ts';
 import { seedTree, startTestApp } from './helpers.ts';
 import type { Client, TestApp } from './helpers.ts';
 
@@ -36,6 +40,11 @@ const savedAs = async (c: Client, paths: string[]) => {
   return decodeURIComponent(r.headers.get('content-disposition')!.split("filename*=UTF-8''")[1]);
 };
 const refused = async (r: Response) => [r.status, (await r.json()).error];
+// Status, type and JSON body of an answer that is not a zip, for a test that expects an error: a zip in its place is a failed assert, not a parse error.
+const answer = async (r: Response) => {
+  const type = r.headers.get('content-type');
+  return [r.status, type, type?.startsWith('application/json') ? await r.json() : null];
+};
 // The log lines written while the test runs, parsed; they do not reach the console.
 const logged = (t: TestContext): Record<string, any>[] => {
   const lines: Record<string, any>[] = [];
@@ -44,6 +53,27 @@ const logged = (t: TestContext): Record<string, any>[] => {
 };
 // How many descriptors of this process are open on `file` (Linux only: the tests that use it skip themselves elsewhere).
 const holdingOpen = (file: string) => readdirSync('/proc/self/fd').filter((fd) => { try { return readlinkSync('/proc/self/fd/' + fd) === file; } catch { return false; } }).length;
+// `n` empty folders in `dir`, made a few hundred at a time.
+async function emptyFolders(dir: string, n: number) {
+  for (let from = 0; from < n; from += 500)
+    await Promise.all(Array.from({ length: Math.min(500, n - from) }, (_, i) => mkdir(join(dir, `d${String(from + i).padStart(5, '0')}`), { recursive: true })));
+}
+// A spy on readdir: the folders read under `root`, in order. `hold` runs just before each is read and can keep the walk waiting.
+// listing.ts imports readdir by name, so the module has to be told that the property of fs/promises has changed.
+function watchReads(t: TestContext, root: string, hold: (path: string) => Promise<void> | void = () => {}): string[] {
+  const reads: string[] = [];
+  const real = fsp.readdir;
+  const spy = t.mock.method(fsp, 'readdir', async (path: any, ...rest: any[]) => {
+    if (String(path).startsWith(root)) {
+      reads.push(String(path));
+      await hold(String(path));
+    }
+    return (real as any)(path, ...rest);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { spy.mock.restore(); syncBuiltinESMExports(); });
+  return reads;
+}
 
 let ta: TestApp, a: Client, papa: Client;
 
@@ -170,6 +200,15 @@ test('files are stored as they are, and keep the time they were taken', async ()
   assert.deepEqual(central(await bytesOf(await zip(a, ['/lab/times']))), [{ name: 'times/t.jpg', method: 0, mtime: taken.getTime() / 1000 }]);
 });
 
+test('a file dated before 1970 is zipped, as a folder or by itself: yazl throws on such a time in the middle of the stream, and that ends the process', { timeout: 20_000 }, async () => {
+  await seedTree(ta.media, ['lab/old/a.jpg', 'lab/old/b.jpg']);
+  const then = new Date('1960-01-01T00:00:00Z');
+  await utimes(join(ta.media, 'lab/old/a.jpg'), then, then);
+  const inFolder = central(await bytesOf(await zip(a, ['/lab/old'])));
+  assert.deepEqual(inFolder.map((e) => [e.name, e.mtime === 0]), [['old/a.jpg', true], ['old/b.jpg', false]], 'held at the epoch');
+  assert.deepEqual(central(await bytesOf(await zip(a, ['/lab/old/a.jpg']))).map((e) => [e.name, e.mtime]), [['a.jpg', 0]]);
+});
+
 test('a folder the server may not read counts as empty, as in the listings', { skip: process.getuid?.() === 0 }, async (t) => {
   await seedTree(ta.media, ['lab/ro/ok.jpg', 'lab/ro/locked/x.jpg']);
   const locked = join(ta.media, 'lab/ro/locked');
@@ -208,20 +247,72 @@ test('a client that hangs up mid-zip costs no error line and no open file', { sk
   assert.equal((await zip(papa, ['/Fam/a.jpg'])).status, 200, 'the server carries on');
 });
 
-test('a client that leaves while the folders are still being read costs no error line and no open file', { skip: !existsSync('/proc/self/fd'), timeout: 30_000 }, async (t) => {
-  const first = join(ta.media, 'lab/wide/0000/in.jpg');
-  await seedTree(ta.media, Array.from({ length: 1500 }, (_, i) => `lab/wide/${String(i).padStart(4, '0')}/${i === 0 ? 'in.jpg' : ''}`));   // a walk that takes a while
+test('a client that has left stops the walk: no folder is read after it, and no error line is written (R3)', { timeout: 30_000 }, async (t) => {
+  const root = join(ta.media, 'lab/wide');
+  await emptyFolders(root, 300);
   const lines = logged(t);
-  const gone = new Promise<void>((resolve) => ta.app.server.once('request', (_req, res) => { res.on('close', () => resolve()); }));
+  const gone = new Promise<void>((resolve) => ta.app.server.once('request', (_req, res) => { res.on('close', () => resolve()); }));   // the next request is the zip
   const hangUp = new AbortController();
-  const pending = post(['/lab/wide'], hangUp.signal).catch(() => null);
-  await sleep(10);
-  hangUp.abort();
-  await Promise.all([gone, pending]);
-  await sleep(500);   // the walk has finished by now, and the handler has found nobody to send the zip to
-  assert.equal(holdingOpen(first), 0);
+  let first = true;
+  // The first folder is not read until the client has hung up and the server has seen it, so the walk is certain to be under way when the client leaves.
+  const reads = watchReads(t, root, async () => {
+    if (!first) return;
+    first = false;
+    hangUp.abort();
+    await gone;
+  });
+  await post(['/lab/wide'], hangUp.signal).catch(() => null);
+  await gone;
+  await sleep(100);   // a walk that went on would have read more of the 300 folders by now (a read takes well under a millisecond)
+  assert.deepEqual(reads, [root], 'the folder that was being read, and no other');
   assert.deepEqual(lines, []);
   assert.equal((await zip(papa, ['/Fam/a.jpg'])).status, 200, 'the server carries on');
+});
+
+test('a photo followed by thousands of folders with nothing visible in them is zipped; yazl pumps a queued run of them by recursion, a frame each', { timeout: 60_000 }, async () => {
+  // The photo comes first, and the folders queue behind it while it is read. About 6000 of them overflowed the stack here; 10000 leave room for another machine.
+  await seedTree(ta.media, ['lab/runs/a.jpg']);
+  await emptyFolders(join(ta.media, 'lab/runs'), 10_000);
+  const names = await namesOf(a, ['/lab/runs']);
+  assert.deepEqual([names.length, names.filter((n) => n.endsWith('/')).length, names.includes('runs/a.jpg')], [10_001, 10_000, true]);
+});
+
+test('more files and folders than the limit are refused with 413 before a byte is sent, and the walk stops as soon as it is passed', async (t) => {
+  // the same route behind the same pipeline, with a small limit
+  ta.app.router.add('POST', '/test/zip/:limit', async (ctx) => {
+    const user = requireUser(ctx);
+    await streamZip(ctx, ta.app, user, JSON.parse((await readForm(ctx)).get('paths')!), Number(ctx.params.limit));
+  });
+  const limited = (limit: number, paths: string[]) =>
+    a.req('POST', `/test/zip/${limit}`, new URLSearchParams({ paths: JSON.stringify(paths) }).toString(), { 'content-type': FORM });
+  // cap/ holds f1.jpg, f2.jpg and sub/ with g.jpg in it. Selecting cap/ is five things (the folder, its three entries and g.jpg); selecting the three entries is four.
+  await seedTree(ta.media, ['lab/cap/f1.jpg', 'lab/cap/f2.jpg', 'lab/cap/sub/g.jpg']);
+  const items = ['/lab/cap/f1.jpg', '/lab/cap/f2.jpg', '/lab/cap/sub'];
+  const fit: [number, string[]][] = [[5, ['/lab/cap']], [4, items]];
+  for (const [limit, paths] of fit) {
+    const r = await limited(limit, paths);
+    assert.equal(r.status, 200, `${limit} fit`);
+    assert.equal(zipNames(await bytesOf(r)).length, 3);
+  }
+  const over: [number, string[]][] = [[4, ['/lab/cap']], [3, ['/lab/cap']], [3, items]];
+  for (const [limit, paths] of over) {
+    const r = await limited(limit, paths);
+    assert.deepEqual(await answer(r), [413, 'application/json; charset=utf-8', { error: `Too many files for one download (limit ${limit})` }], `${limit} do not`);
+  }
+  // three folders of three files: with a limit of five the first folder is the last one read
+  await seedTree(ta.media, ['a', 'b', 'c'].flatMap((d) => [1, 2, 3].map((n) => `lab/cap3/${d}/${n}.jpg`)));
+  const reads = watchReads(t, join(ta.media, 'lab/cap3'));
+  assert.equal((await limited(5, ['/lab/cap3'])).status, 413);
+  assert.deepEqual(reads, [join(ta.media, 'lab/cap3'), join(ta.media, 'lab/cap3/a')]);
+});
+
+test('the limit is 20000 files and folders', { timeout: 60_000 }, async () => {
+  assert.equal(ZIP_LIMIT, 20_000);
+  const dir = join(ta.media, 'lab/limit');
+  await mkdir(dir, { recursive: true });
+  for (let from = 0; from <= ZIP_LIMIT; from += 500)   // 20001 photos: with the folder itself, one too many
+    await Promise.all(Array.from({ length: Math.min(500, ZIP_LIMIT + 1 - from) }, (_, i) => writeFile(join(dir, `p${String(from + i).padStart(5, '0')}.jpg`), '')));
+  assert.deepEqual(await answer(await zip(a, ['/lab/limit'])), [413, 'application/json; charset=utf-8', { error: 'Too many files for one download (limit 20000)' }]);
 });
 
 for (const [how, swap] of [

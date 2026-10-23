@@ -4,9 +4,11 @@
 import { constants } from 'node:fs';
 import type { Stats } from 'node:fs';
 import { lstat, open, stat } from 'node:fs/promises';
+import type { ServerResponse } from 'node:http';
 import { basename, dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { setImmediate as yieldNow } from 'node:timers/promises';
 import yazl from 'yazl';
 import type { Me } from '../shared/types.ts';
 import type { App } from './app.ts';
@@ -19,16 +21,25 @@ import { nextFreeName } from './names.ts';
 import { contentDisposition } from './send.ts';
 import { locate } from './vpath.ts';
 
+// The most files and folders one zip may take (413 above it). The whole list is kept, yazl keeps a record of every entry, and it looks for its next entry from the
+// first on every add: a selection of a whole library would cost more memory and time than any one download is worth.
+export const ZIP_LIMIT = 20_000;
+
 // One thing the request selected: a folder, or a media file. `vpath` is what the client called it, which gives its name in the zip.
 interface Top { vpath: string; abs: string; isDir: boolean; mtime: Date }
 // One entry of the zip: a file (abs), or a folder with nothing in it (no abs; the name ends in '/').
 interface Piece { name: string; abs?: string; mtime?: Date }
+// What the walk has gathered, and what ends it early: the limit, and a client that has left.
+interface Gather { pieces: Piece[]; seen: number; limit: number; res: ServerResponse }
 
 const unseen = (e: unknown) => ['ENOENT', 'ENOTDIR', 'EACCES'].includes((e as NodeJS.ErrnoException).code ?? '');
 // null when the entry has gone, or may not be reached, since it was listed. lstat unless asked to follow: a symlink is what it is, not what it points at.
 const statOrNull = (abs: string, follow = false): Promise<Stats | null> =>
   (follow ? stat(abs) : lstat(abs)).catch((e) => { if (unseen(e)) return null; throw e; });
 const notFound = () => new HttpError(404, 'Not found');
+// yazl writes a time as an unsigned 32-bit number, and for one before 1970 it throws in the middle of the stream, beyond any catch: that ends the process. Such
+// times exist (a share that has no time for a file shows 1601), so they are held at the epoch.
+const stamp = (st: Stats) => new Date(Math.max(0, st.mtimeMs));
 // The format reads a backslash as a separator, and a disk name may hold one: a\..\x would climb out of the folder it is unpacked into.
 const safe = (name: string) => name.replace(/\\/g, '_');
 const leaf = (vpath: string) => vpath.slice(vpath.lastIndexOf('/') + 1) || ROOT_NAME;
@@ -40,6 +51,12 @@ function free(taken: Set<string>, name: string): string {
   for (let n = 1; taken.has(out); n++) out = nextFreeName(name, n);
   taken.add(out);
   return out;
+}
+
+// `n` more files and folders have been met. Past the limit the request is refused, before a byte is sent.
+function count(g: Gather, n: number): void {
+  g.seen += n;
+  if (g.seen > g.limit) throw new HttpError(413, `Too many files for one download (limit ${g.limit})`);
 }
 
 // The selection as it is on disk: each item is a folder or a media file that the listings show, or the request is refused (404) before a byte is sent.
@@ -55,7 +72,7 @@ async function pick(app: App, user: Me, paths: string[]): Promise<Top[]> {
     const isDir = st?.isDirectory() === true;
     const isMedia = st?.isFile() === true && mediaTypeOf(basename(loc.abs)) !== null;
     if (!st || !(isDir || isMedia)) throw notFound();
-    if (!picked.has(loc.abs)) picked.set(loc.abs, { vpath: loc.vpath, abs: loc.abs, isDir, mtime: st.mtime });
+    if (!picked.has(loc.abs)) picked.set(loc.abs, { vpath: loc.vpath, abs: loc.abs, isDir, mtime: stamp(st) });
   }
   const inside = (abs: string) => {
     for (let dir = dirname(abs); dir !== dirname(dir); dir = dirname(dir)) if (picked.has(dir)) return true;
@@ -65,17 +82,19 @@ async function pick(app: App, user: Me, paths: string[]): Promise<Top[]> {
 }
 
 // The media files of a folder and everything below it, as entries named `prefix/…`, and the folders with nothing in them. A folder that has gone, or that the
-// server may not read, counts as empty, as it does in the listings.
-async function walk(abs: string, prefix: string, out: Piece[]): Promise<void> {
+// server may not read, counts as empty, as it does in the listings. The walk ends at the limit, and at the first folder after the client has left.
+async function walk(abs: string, prefix: string, g: Gather): Promise<void> {
+  if (g.res.destroyed) return;
   const { dirs, files } = await readVisible(abs).catch((e) => { if (unseen(e)) return { dirs: [], files: [] }; throw e; });
-  if (dirs.length === 0 && files.length === 0) out.push({ name: prefix + '/' });
+  count(g, dirs.length + files.length);
+  if (dirs.length === 0 && files.length === 0) g.pieces.push({ name: prefix + '/' });
   const taken = new Set<string>();
   const stats = await Promise.all(files.map((f) => statOrNull(join(abs, f.name))));
   files.forEach((f, i) => {
     const st = stats[i];
-    if (st?.isFile()) out.push({ name: `${prefix}/${free(taken, safe(f.name))}`, abs: join(abs, f.name), mtime: st.mtime });
+    if (st?.isFile()) g.pieces.push({ name: `${prefix}/${free(taken, safe(f.name))}`, abs: join(abs, f.name), mtime: stamp(st) });
   });
-  for (const d of dirs) await walk(join(abs, d), `${prefix}/${free(taken, safe(d))}`, out);
+  for (const d of dirs) await walk(join(abs, d), `${prefix}/${free(taken, safe(d))}`, g);
 }
 
 // A file is opened when its turn comes, which can be long after the folder was read, so never through a symlink put there since (the walk skipped them).
@@ -94,23 +113,22 @@ async function openRead(abs: string): Promise<Readable> {
   }
 }
 
-// ponytail: the whole list is kept, and yazl keeps a record of every entry for the central directory: some hundreds of bytes each, so a selection of a few hundred
-// thousand files costs a few hundred MB. Refuse a selection above some count if a library ever gets there.
-export async function streamZip(ctx: Ctx, app: App, user: Me, paths: string[]): Promise<void> {
+export async function streamZip(ctx: Ctx, app: App, user: Me, paths: string[], limit = ZIP_LIMIT): Promise<void> {
   if (paths.length === 0) throw new HttpError(400, 'Invalid path');   // no path at all is '' and fails as an invalid one
   const tops = await pick(app, user, paths);
-  const pieces: Piece[] = [];
+  const g: Gather = { pieces: [], seen: 0, limit, res: ctx.res };
   const names = new Set<string>();
   for (const t of tops) {
+    count(g, 1);
     // Items from different folders can have one name; a name like C:x is a drive to the format.
     const name = free(names, safe(leaf(t.vpath)).replace(/^([a-zA-Z]):/, '$1_'));
-    if (t.isDir) await walk(t.abs, name, pieces);
-    else pieces.push({ name, abs: t.abs, mtime: t.mtime });
+    if (t.isDir) await walk(t.abs, name, g);
+    else g.pieces.push({ name, abs: t.abs, mtime: t.mtime });
   }
   // A folder is named for itself; a file, or several items, for the folder they are taken from (the first one's, if they differ).
   const first = tops[0];
   const zipName = `${leaf(tops.length === 1 && first.isDir ? first.vpath : parent(first.vpath))}.zip`;
-  await send(ctx, user, zipName, pieces);
+  await send(ctx, user, zipName, g.pieces);
 }
 
 // Everything that can answer with a status is behind us. From the first byte on a failure can only cut the download short, and it must never be thrown into
@@ -128,8 +146,14 @@ async function send(ctx: Ctx, user: Me, zipName: string, pieces: Piece[]): Promi
   zip.on('error', fail);
   res.writeHead(200, { 'content-type': 'application/zip', 'content-disposition': contentDisposition('attachment', zipName) });
   const done = pipeline(out, res);
-  try {
-    for (const { name, abs, mtime } of pieces) {
+  // Folders first. yazl pumps its entries one after the other, and the folders queued behind a file that is still being read are pumped by recursion, a frame
+  // each: some thousands overflow the stack, which nothing catches and which ends the process. Added before any file, a folder is finished as it is added.
+  const ordered = [...pieces.filter((p) => p.abs === undefined), ...pieces.filter((p) => p.abs !== undefined)];
+  const fill = async () => {
+    for (const [i, { name, abs, mtime }] of ordered.entries()) {
+      // yazl looks for its next entry from the first on every add, so thousands of adds in a row hold everyone else up: give way now and then.
+      if (i > 0 && i % 1000 === 0) await yieldNow();
+      if (stopped) return;
       if (abs === undefined) {
         zip.addEmptyDirectory(name);
         continue;
@@ -146,9 +170,8 @@ async function send(ctx: Ctx, user: Me, zipName: string, pieces: Piece[]): Promi
       });
     }
     zip.end();
-  } catch (err) {
-    fail(err as Error);
-  }
+  };
+  void fill().catch(fail);
   try {
     await done;
   } catch (err) {
