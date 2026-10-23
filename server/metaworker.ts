@@ -11,9 +11,10 @@ import { mediaTypeOf } from './mediatypes.ts';
 // What a job answers. exifDate is DateTimeOriginal as the camera wrote it; meta.ts turns it into a wall clock, or uses the mtime.
 export interface PhotoResult { width: number | null; height: number | null; exifDate: string | null }
 
-// What a worker posts: the answer to its job, or, once and before the slow part, the notice that this job is about to read its file by path
-// (PhotoPool then gives it the longer timeout).
-export type WorkerMessage = PhotoResult | null | 'by-path';
+// What a worker posts: 'ready' once, when its modules are loaded (the pool starts the clock of the job it has sent it then); 'by-path', before the slow
+// part of a job, when this job is about to read its file by path (the pool then gives it the longer timeout); and the answer to a job. An answer is never
+// null: that is what the pool makes of a job it had to give up on.
+export type WorkerMessage = PhotoResult | 'ready' | 'by-path';
 
 const positive = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : null);
 
@@ -77,5 +78,8 @@ if (!parentPort) throw new Error('metaworker.ts is a worker thread, started by m
 const port = parentPort;
 const post = (message: WorkerMessage): void => port.postMessage(message);
 port.on('message', ({ abs }: { abs: string }) => {
-  photoMeta(abs).then(post, () => post(null));
+  // photoMeta guards every read itself, so a rejection is a bug, not a finding about the file: left unhandled it ends this worker, and the pool gives
+  // the job up (logged, not stored).
+  photoMeta(abs).then(post);
 });
+post('ready');

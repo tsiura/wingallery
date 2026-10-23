@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readlinkSync } from 'node:fs';
 import { copyFile, open, readFile, readdir, stat, truncate, writeFile } from 'node:fs/promises';
@@ -49,6 +49,12 @@ after(() => ta.close());
 const thumbsIn = (dataDir: string, run: RunFn): Thumbnailer => createThumbnailer({ ...ta.cfg, dataDir }, run);
 const outOf = (args: string[]) => args.at(-1)!.replace(/\[.*$/, '');
 const valueAfter = (args: string[], flag: string) => args[args.indexOf(flag) + 1];
+// The log lines written while the test runs, parsed; they do not reach the console.
+const logged = (t: TestContext): Record<string, any>[] => {
+  const lines: Record<string, any>[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(JSON.parse(line)); });
+  return lines;
+};
 // How many descriptors of this process are open on `file` (Linux only: the tests that use it skip themselves elsewhere).
 const holdingOpen = (file: string) => readdirSync('/proc/self/fd').filter((fd) => { try { return readlinkSync('/proc/self/fd/' + fd) === file; } catch { return false; } }).length;
 
@@ -269,7 +275,7 @@ test('video thumbnail is generated once and cached', { skip: !hasCommand('ffmpeg
   assert.deepEqual(await readdir(join(ta.cfg.dataDir, 'cache/thumbs')), files);
   assert.deepEqual(await tree(), before, 'nothing is written next to the media');
 });
-test('photo + HEIC thumbnails and HEIC preview', { skip: !hasCommand('vipsthumbnail') }, async () => {
+test('photo + HEIC thumbnails and HEIC preview', { skip: !hasCommand('vipsthumbnail') }, async (t) => {
   for (const p of ['/pics/a.jpg', '/pics/s.heic']) {
     const r = await a.req('GET', '/media/thumb?v=1&path=' + encodeURIComponent(p));
     assert.equal(r.status, 200, p);
@@ -285,7 +291,10 @@ test('photo + HEIC thumbnails and HEIC preview', { skip: !hasCommand('vipsthumbn
   const { width, height } = imageSize(preview);
   assert.ok(width <= 2560 && height <= 2560, `${width}x${height}`);
   assert.equal((await readdir(join(ta.cfg.dataDir, 'cache/previews'))).length, 1);
+  const lines = logged(t);
   assert.deepEqual(await a.json('GET', '/media/thumb?v=1&path=' + encodeURIComponent('/pics/corrupt.jpg')), { status: 422, body: { error: 'No preview available' } });
+  assert.deepEqual(lines.map((l) => [l.event, l.cmd, l.rel]), [['error', 'vipsthumbnail', 'pics/corrupt.jpg']]);   // and the log says what vips said
+  assert.match(lines[0].error, /^vipsthumbnail failed: .*not a known file format/s);
 });
 test('a poster of a bigger clip is scaled down to at most 480 px (R2)', { skip: !hasCommand('ffmpeg') }, async () => {
   const dir = await tempDir();
@@ -299,10 +308,47 @@ test('a poster of a bigger clip is scaled down to at most 480 px (R2)', { skip: 
   assert.ok(width <= 480 && height <= 480, `${width}x${height}`);
   assert.deepEqual([width, height], [480, 270]);
 });
-test('a video ffmpeg can not read is answered 422 and leaves nothing behind (Review Focus 2)', { skip: !hasCommand('ffmpeg') }, async () => {
+test('a video ffmpeg can not read is answered 422 and leaves nothing behind (Review Focus 2)', { skip: !hasCommand('ffmpeg') }, async (t) => {
   await writeFile(join(ta.media, 'pics/broken.mp4'), 'this is not a video');
+  const lines = logged(t);
   assert.deepEqual(await a.json('GET', thumbUrl('/pics/broken.mp4')), NO_PREVIEW);
   assert.deepEqual((await readdir(join(ta.cfg.dataDir, 'cache/thumbs'))).filter((n) => !/^[0-9a-f]{40}\.jpg$/.test(n)), []);
+  assert.deepEqual(lines.map((l) => [l.event, l.cmd, l.rel]), [['error', 'ffmpeg', 'pics/broken.mp4']], 'one line, though the poster was tried twice');
+  assert.match(lines[0].error, /^ffmpeg failed: /);
+});
+// ffmpeg and ffprobe choose their demuxer by what a file holds, not by its name, so a member's `x.mp4` can be a manifest that names other files to play.
+const dashManifest = (target: string) => `<?xml version="1.0"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT1S" minBufferTime="PT1S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">
+ <Period><AdaptationSet mimeType="video/mp4" segmentAlignment="true">
+  <Representation id="1" bandwidth="100000" width="320" height="240" codecs="avc1.4d401e">
+   <BaseURL>${target}</BaseURL>
+   <SegmentBase indexRange="0-0"/>
+  </Representation></AdaptationSet></Period></MPD>`;
+test('a manifest that names another video can neither make a poster of it nor show its size and length (finding 2)', { skip: !hasCommand('ffmpeg') || !hasCommand('ffprobe') }, async (t) => {
+  // papa sees fam/ only; pics/v.mp4 is not his. With only -protocol_whitelist file, ffmpeg 8.0.1 and ffprobe both follow the manifest to it.
+  await writeFile(join(ta.media, 'fam/manifest.mp4'), dashManifest(join(ta.media, 'pics/v.mp4')));
+  const lines = logged(t);
+  const poster = await papa.req('GET', thumbUrl('/Fam/manifest.mp4'));
+  assert.equal(poster.status, 422, `a ${poster.headers.get('content-type')} of a video that is not his`);
+  assert.deepEqual(await poster.json(), NO_PREVIEW.body);
+  assert.deepEqual(lines.map((l) => [l.cmd, l.rel]), [['ffmpeg', 'fam/manifest.mp4']]);
+  const meta = (await papa.json('GET', '/api/meta?path=' + encodeURIComponent('/Fam/manifest.mp4'))).body;
+  assert.deepEqual([meta.width, meta.height, meta.duration], [null, null, null]);
+});
+const hasEncoder = (name: string) => hasCommand('ffmpeg') && spawnSync('ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8' }).stdout.includes(` ${name} `);
+test('every video extension still gets its poster and its probe data under the format whitelist (finding 2)', { skip: !hasCommand('ffprobe') || !hasEncoder('libvpx') }, async () => {
+  const dir = await tempDir();
+  await execFileP('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc=s=320x240:d=1:r=5', '-c:v', 'libvpx', '-pix_fmt', 'yuv420p', join(dir, 'clip.webm')]);
+  await copyFile(join(dir, 'clip.webm'), join(ta.media, 'pics/w.webm'));
+  await copyFile(fixture('clip.mp4'), join(ta.media, 'pics/n.m4v'));
+  for (const path of ['/pics/v.mp4', '/pics/m.mov', '/pics/n.m4v', '/pics/w.webm']) {
+    const poster = await a.req('GET', thumbUrl(path));
+    assert.equal(poster.status, 200, path);
+    assert.ok(isJpeg(await bytesOf(poster)), path);
+    const meta = (await a.json('GET', '/api/meta?path=' + encodeURIComponent(path))).body;
+    assert.deepEqual([meta.width, meta.height], [320, 240], path);
+    assert.ok(Math.abs(meta.duration - 1) < 0.3, `${path}: ${meta.duration} s`);
+  }
 });
 test('/media/view makes a JPEG preview of HEIC and HEIF, once, and serves every other photo as it is', async (t) => {
   const calls: string[][] = [];
@@ -328,10 +374,12 @@ test('a preview or thumbnail that can not be made is 422 on every route that mak
   const real = ta.app.thumbs;
   t.after(() => { ta.app.thumbs = real; });
   ta.app.thumbs = thumbsIn(await tempDir(), async () => { throw new Error('vipsthumbnail failed: not a known file format'); });
+  const lines = logged(t);
   assert.deepEqual(await a.json('GET', mediaUrl('view', '/pics/s.heic')), NO_PREVIEW);
   assert.deepEqual(await a.json('GET', thumbUrl('/pics/corrupt.jpg')), NO_PREVIEW);
   assert.deepEqual(await a.json('GET', thumbUrl('/pics/v.mp4')), NO_PREVIEW);
   assert.equal((await a.req('GET', mediaUrl('download', '/pics/corrupt.jpg'))).status, 200, 'the original is still there to download');
+  assert.deepEqual(lines.map((l) => [l.cmd, l.rel]), [['vipsthumbnail', 'pics/s.heic'], ['vipsthumbnail', 'pics/corrupt.jpg'], ['ffmpeg', 'pics/v.mp4']]);
 });
 
 test('concurrent requests share one job', async () => {
@@ -378,13 +426,16 @@ test('the tool commands: absolute input, size bounds, JPEG quality, the output l
   assert.match(heic.args[4], /\.tmp\.jpg\[Q=85,strip\]$/);
   assert.equal(video.ms, 30_000);
   assert.equal(video.cmd, 'ffmpeg');
-  // only the file protocol may be opened (R3), and it is set before -i; the first frame after one second; JPEG quality 5 (F16); the output last
-  assert.deepEqual(video.args.slice(0, 8), ['-v', 'error', '-protocol_whitelist', 'file', '-ss', '1', '-i', '/m/v.mp4']);
-  assert.deepEqual(video.args.slice(8, -1), ['-frames:v', '1', '-vf', "scale='min(480,iw)':'min(480,ih)':force_original_aspect_ratio=decrease", '-q:v', '5', '-y']);
+  // only the file protocol may be opened (R3) and only the MP4/MOV and Matroska/WebM demuxers may read it (finding 2), both set before -i;
+  // the first frame after one second; JPEG quality 5 (F16); the output last
+  assert.deepEqual(video.args.slice(0, 10), ['-v', 'error', '-protocol_whitelist', 'file', '-format_whitelist', 'mov,matroska', '-ss', '1', '-i', '/m/v.mp4']);
+  assert.deepEqual(video.args.slice(10, -1), ['-frames:v', '1', '-vf', "scale='min(480,iw)':'min(480,ih)':force_original_aspect_ratio=decrease", '-q:v', '5', '-y']);
   assert.match(video.args.at(-1)!, /\.tmp\.jpg$/);
   assert.ok(video.args.indexOf('-protocol_whitelist') < video.args.indexOf('-i'));
+  assert.ok(video.args.indexOf('-format_whitelist') < video.args.indexOf('-i'));
 });
-test('a poster is tried again from the first frame when ffmpeg fails or leaves nothing at -ss 1 (F3)', async () => {
+test('a poster is tried again from the first frame when ffmpeg fails or leaves nothing at -ss 1 (F3)', async (t) => {
+  const lines = logged(t);
   const st = { size: 1, mtimeMs: 1 };
   for (const [how, atOne] of [['exits non-zero', async () => { throw new Error('ffmpeg failed: exit 234'); }], ['leaves no file', async () => {}], ['leaves an empty file', async (out: string) => { await writeFile(out, ''); }]] as const) {
     const seeks: string[] = [];
@@ -398,20 +449,66 @@ test('a poster is tried again from the first frame when ffmpeg fails or leaves n
     assert.deepEqual(seeks, ['1', '0'], how);
     assert.ok(isJpeg(await readFile(file)), how);
   }
+  assert.equal(lines.length, 0, 'the failure at -ss 1 is part of how a short clip is handled, not a fault to report');
   // both fail: 422, once each, and nothing is cached
   const seeks: string[] = [];
   const dataDir = await tempDir();
-  const th = thumbsIn(dataDir, async (_cmd, args) => { seeks.push(valueAfter(args, '-ss')); throw new Error('ffmpeg failed'); });
+  const th = thumbsIn(dataDir, async (_cmd, args) => { seeks.push(valueAfter(args, '-ss')); throw new Error('ffmpeg failed at -ss ' + valueAfter(args, '-ss')); });
   await assert.rejects(th.thumb('/m/bad.mp4', 'bad.mp4', st, 'video'), (e: unknown) => e instanceof HttpError && e.status === 422 && e.message === 'No preview available');
   assert.deepEqual(seeks, ['1', '0']);
   assert.deepEqual(await readdir(join(dataDir, 'cache/thumbs')), []);
+  assert.deepEqual(lines.map((l) => [l.cmd, l.rel, l.error]), [['ffmpeg', 'bad.mp4', 'ffmpeg failed at -ss 0']], 'one line, with the reason of the last try');
   // a photo is not retried
   const photoCalls: string[][] = [];
   const photos = thumbsIn(await tempDir(), async (_cmd, args) => { photoCalls.push(args); throw new Error('vipsthumbnail failed'); });
   await assert.rejects(photos.thumb('/m/bad.jpg', 'bad.jpg', st, 'photo'), (e: unknown) => e instanceof HttpError && e.status === 422);
   assert.equal(photoCalls.length, 1);
 });
-test('a tool that fails, times out, is missing or leaves nothing is 422; nothing is cached, so the next request tries again', async () => {
+test('a picture that can not be made is logged with the tool, the file and the reason, and is still answered 422 (finding 1)', async (t) => {
+  const lines = logged(t);
+  const st = { size: 1, mtimeMs: 1 };
+  const refused = (e: unknown) => e instanceof HttpError && e.status === 422 && e.message === 'No preview available';
+  let behave: (cmd: string, out: string) => Promise<void> = async () => {};
+  const th = thumbsIn(await tempDir(), async (cmd, args) => { await behave(cmd, outOf(args)); return ''; });
+
+  // a tool that is not installed, one that is killed at its timeout and one that crashes must not look like a corrupt file: each says what it was
+  const failures = [
+    'vipsthumbnail failed: spawn vipsthumbnail ENOENT',                                                // not installed
+    'vipsthumbnail failed: Command failed: vipsthumbnail /m/a.jpg --size 480x480> -o /data/x.jpg\n',   // killed at the timeout
+    'vipsthumbnail failed: Segmentation fault\n',                                                      // crashed
+  ];
+  for (const [i, message] of failures.entries()) {
+    behave = async () => { throw new Error(message); };
+    await assert.rejects(th.thumb('/m/a.jpg', `a${i}.jpg`, st, 'photo'), refused);
+  }
+  assert.deepEqual(lines.map((l) => [l.event, l.message, l.cmd, l.rel, l.error]), failures.map((message, i) => ['error', 'Preview tool failed', 'vipsthumbnail', `a${i}.jpg`, message]));
+  assert.ok(lines.every((l) => typeof l.t === 'string'));
+
+  // the preview of a HEIC logs the same way, and a tool that exits 0 without a picture is told apart from one that failed
+  lines.length = 0;
+  behave = async () => {};
+  await assert.rejects(th.preview('/m/a.heic', 'a.heic', st), refused);
+  behave = async (_cmd, out) => { await writeFile(out, ''); };
+  await assert.rejects(th.thumb('/m/b.jpg', 'b.jpg', st, 'photo'), refused);
+  assert.deepEqual(lines.map((l) => [l.cmd, l.rel, l.error]), [['vipsthumbnail', 'a.heic', 'vipsthumbnail left no picture'], ['vipsthumbnail', 'b.jpg', 'vipsthumbnail left no picture']]);
+
+  // what a tool says is cut: stderr of a hostile file must not fill the log
+  lines.length = 0;
+  behave = async () => { throw new Error('ffmpeg failed: ' + 'x'.repeat(100_000)); };
+  await assert.rejects(th.thumb('/m/c.mp4', 'c.mp4', st, 'video'), refused);
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].error.length <= 500, `${lines[0].error.length} characters`);
+  assert.ok(lines[0].error.startsWith('ffmpeg failed: xxx'));
+
+  // success and cache hits are silent
+  lines.length = 0;
+  behave = async (_cmd, out) => { await writeFile(out, 'x'); };
+  await th.thumb('/m/d.jpg', 'd.jpg', st, 'photo');
+  await th.thumb('/m/d.jpg', 'd.jpg', st, 'photo');
+  assert.deepEqual(lines, []);
+});
+test('a tool that fails, times out, is missing or leaves nothing is 422; nothing is cached, so the next request tries again', async (t) => {
+  const lines = logged(t);
   const st = { size: 1, mtimeMs: 1 };
   const dataDir = await tempDir();
   let calls = 0;
@@ -436,8 +533,10 @@ test('a tool that fails, times out, is missing or leaves nothing is 422; nothing
   const results = await Promise.allSettled([th.thumb('/m/b.jpg', 'b.jpg', st, 'photo'), th.thumb('/m/b.jpg', 'b.jpg', st, 'photo')]);
   assert.deepEqual(results.map((r) => r.status), ['rejected', 'rejected']);
   assert.equal(calls, 6, 'one job served both');
+  assert.equal(lines.length, 5, 'and it is reported once: four failures before, one now');
   behave = writes;
   assert.ok(await th.thumb('/m/b.jpg', 'b.jpg', st, 'photo'));
+  assert.equal(lines.length, 5);
 });
 test('a path that is not absolute never reaches a tool', async () => {
   let calls = 0;

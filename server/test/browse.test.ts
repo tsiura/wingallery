@@ -1,12 +1,12 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync } from 'node:fs';
-import { chmod, copyFile, mkdir, readFile, stat, symlink, truncate, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, stat, symlink, truncate, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Me } from '../../shared/types.ts';
 import { pLimit } from '../limit.ts';
 import { invalidateStats, listFiles } from '../listing.ts';
-import { PhotoPool, exifToWallClock, extractMeta, getMeta, instantToWallClock, photoPool } from '../meta.ts';
+import { PhotoPool, exifToWallClock, extractMeta, getMeta, giveUps, instantToWallClock, photoPool } from '../meta.ts';
 import { runProcess } from '../proc.ts';
 import type { RunFn } from '../proc.ts';
 import { getMe } from '../users.ts';
@@ -72,7 +72,7 @@ async function peakRss(run: () => Promise<unknown>): Promise<number> {
 }
 
 // Worker code from a data: URL, for the pool tests. What the worker does depends on the path it is sent; 'hang' never answers, in a loop that
-// never yields, like the frozen parser.
+// never yields, like the frozen parser. Like metaworker.ts, it says 'ready' once it is set up.
 const workerFrom = (code: string) => new URL('data:text/javascript,' + encodeURIComponent(code));
 const FAKE_WORKER = workerFrom(`
   import { parentPort, threadId } from 'node:worker_threads';
@@ -81,7 +81,8 @@ const FAKE_WORKER = workerFrom(`
     if (abs === 'exit') process.exit(3);
     if (abs === 'hang') for (;;) {}
     setTimeout(() => parentPort.postMessage({ width: threadId, height: null, exifDate: null }), 20);
-  });`);
+  });
+  parentPort.postMessage('ready');`);
 
 before(async () => {
   ta = await startTestApp();
@@ -124,10 +125,11 @@ test('extractMeta: ffprobe output decides size, rotation, duration and date', as
     format: { duration: '2.500000', tags: { creation_time: '2025-07-11T10:00:00.000000Z' } } };
   assert.deepEqual(await extractMeta('/m/v.mov', 'video', 0, probe(iphone)),
     { width: 1080, height: 1920, takenAt: instantToWallClock(Date.UTC(2025, 6, 11, 10, 0, 0)), duration: 2.5 });
-  // the whole command is pinned: -protocol_whitelist file comes before the input, so a crafted file can't make ffprobe open a network URL or anything but a file
+  // the whole command is pinned: -protocol_whitelist file comes before the input, so a crafted file can't make ffprobe open a network URL or anything but a
+  // file, and -format_whitelist mov,matroska so that it can't be read as a manifest or playlist that names other files (the demuxer is chosen by content)
   assert.deepEqual(calls[0], ['ffprobe', ['-v', 'error', '-print_format', 'json', '-select_streams', 'v:0',
     '-show_entries', 'stream=width,height:stream_tags=rotate:stream_side_data=rotation:format=duration:format_tags=creation_time',
-    '-protocol_whitelist', 'file', '/m/v.mov'], 15_000]);
+    '-protocol_whitelist', 'file', '-format_whitelist', 'mov,matroska', '/m/v.mov'], 15_000]);
 
   const rotateTag = await extractMeta('/m/v.mp4', 'video', 7, probe({ streams: [{ width: 640, height: 360, tags: { rotate: '270' } }], format: {} }));
   assert.deepEqual(rotateTag, { width: 360, height: 640, takenAt: instantToWallClock(7), duration: null });
@@ -238,27 +240,58 @@ test('a photo that freezes the parser is given up on at the timeout; the loop st
   assert.deepEqual(await extractMeta(fixture('exif-rot6.jpg'), 'photo', 0), { width: 48, height: 64, takenAt: '2025-12-24T18:00:00', duration: null });
   assert.deepEqual(lines.map((l) => [l.event, l.message, l.rel]), [['error', 'Photo metadata timed out', frozen]]);
 });
-test('a given-up photo is stored like any parse failure: listing its folder again does not freeze again', { timeout: 30_000 }, async (t) => {
-  const was = photoPool.timeoutMs;
-  photoPool.timeoutMs = 300; t.after(() => { photoPool.timeoutMs = was; });
+test('a given-up photo is not stored, only remembered for a while: its folder does not freeze again at once, and is tried again when the window is over (finding 3)', { timeout: 30_000 }, async (t) => {
+  const was = [photoPool.timeoutMs, giveUps.windowMs];
+  photoPool.timeoutMs = 300; giveUps.windowMs = 1500;
+  giveUps.clear(); t.after(() => { [photoPool.timeoutMs, giveUps.windowMs] = was; giveUps.clear(); });
   const lines: any[] = [];
   t.mock.method(console, 'log', (line: string) => { lines.push(JSON.parse(line)); });
+  const sent = t.mock.method(photoPool, 'run');   // a spy: how often the pool was asked to parse a photo
   await mkdir(join(ta.media, 'pics/frozen'), { recursive: true });
-  await writeFile(join(ta.media, 'pics/frozen/frozen.heic'), FROZEN_HEIC);
-  const list = () => get(admin, 'list', '/pics/frozen');
+  const file = join(ta.media, 'pics/frozen/frozen.heic');
+  await writeFile(file, FROZEN_HEIC);
+  const list = async () => { const started = performance.now(); const listing = await get(admin, 'list', '/pics/frozen'); return { listing, ms: performance.now() - started }; };
+  const row = () => ta.db.prepare('select width, height, taken_at from media_meta where rel_path = ?').get('pics/frozen/frozen.heic');
 
-  const started = performance.now();
   const first = await list();
-  assert.ok(performance.now() - started >= 250, 'the first listing waited for the timeout');
-  const entry = first.body.entries[0];
+  assert.ok(first.ms >= 250, 'the first listing waited for the timeout');
+  const entry = first.listing.body.entries[0];
   assert.deepEqual([entry.name, entry.width, entry.height, entry.duration, entry.takenAt], ['frozen.heic', null, null, null, instantToWallClock(entry.mtime)]);
-  const row = ta.db.prepare('select width, height, taken_at from media_meta where rel_path = ?').get('pics/frozen/frozen.heic') as any;
-  assert.deepEqual([row.width, row.height, row.taken_at], [null, null, entry.takenAt]);
+  assert.equal(row(), undefined, 'a timeout says nothing about the file, so nothing is stored');
+  assert.equal(sent.mock.callCount(), 1);
 
-  const again = performance.now();
-  assert.deepEqual((await list()).body, first.body);
-  assert.ok(performance.now() - again < 150, 'the second listing came from the cache');
-  assert.deepEqual(lines.map((l) => [l.event, l.message, l.rel]), [['error', 'Photo metadata timed out', 'pics/frozen/frozen.heic']]);
+  const again = await list();
+  assert.deepEqual(again.listing.body, first.listing.body);
+  assert.ok(again.ms < 150, `the second listing took ${Math.round(again.ms)} ms`);
+  assert.equal(sent.mock.callCount(), 1, 'and sent nothing to a worker');
+  assert.equal(row(), undefined);
+
+  // the memory is of this file as it is: another size, or another mtime, is another file, and is tried at once
+  const was0 = await stat(file);
+  await writeFile(file, Buffer.concat([FROZEN_HEIC, Buffer.alloc(1)]));
+  await utimes(file, was0.atime, was0.mtime);                               // another size, the same mtime
+  assert.ok((await list()).ms >= 250);
+  assert.equal(sent.mock.callCount(), 2);
+  await utimes(file, was0.atime, new Date(was0.mtimeMs + 5000));            // the same size, another mtime
+  assert.ok((await list()).ms >= 250);
+  assert.equal(sent.mock.callCount(), 3);
+
+  await new Promise((resolve) => setTimeout(resolve, 1600));   // the window is over
+  const later = await list();
+  assert.ok(later.ms >= 250, 'after the window it is tried again');
+  assert.equal(sent.mock.callCount(), 4);
+  assert.equal(row(), undefined);
+  assert.deepEqual(lines.map((l) => [l.event, l.message, l.rel]), Array(4).fill(['error', 'Photo metadata timed out', 'pics/frozen/frozen.heic']));
+});
+test('what a photo parse really finds, a failure included, is stored; only a timeout or a crash is not (finding 3)', async () => {
+  const dir = await tempDir();
+  const bad = join(dir, 'bad.jpg'), good = join(dir, 'good.jpg');
+  await copyFile(fixture('corrupt.jpg'), bad);
+  await copyFile(fixture('exif-rot6.jpg'), good);
+  for (const [file, rel] of [[bad, 'odd/bad.jpg'], [good, 'odd/good.jpg']]) await getMeta(ta.db, file, rel, await stat(file), 'photo');
+  const row = (rel: string) => ta.db.prepare('select width, height from media_meta where rel_path = ?').get(rel);
+  assert.deepEqual({ ...(row('odd/bad.jpg') as object) }, { width: null, height: null });   // not a JPEG: exifr and image-size throw, which is a finding about the file
+  assert.deepEqual({ ...(row('odd/good.jpg') as object) }, { width: 48, height: 64 });
 });
 
 test('PhotoPool: a worker that throws, exits or hangs fails only its job and is replaced', { timeout: 20_000 }, async (t) => {
@@ -290,8 +323,7 @@ test('a frozen small file is given up on at the short timeout, a frozen HEIC rea
   await writeFile(small, FROZEN_HEIC);                                                // 60 bytes: parsed from the head buffer
   await writeFile(big, Buffer.concat([FROZEN_HEIC, Buffer.alloc(600 * 1024)]));       // longer than the head: exifr is given the path
   const timed = async (file: string) => { const started = performance.now(); await extractMeta(file, 'photo', 0); return performance.now() - started; };
-  await extractMeta(fixture('plain.png'), 'photo', 0);   // a worker is up, so the long timeout isn't started by a slow start-up (the notice comes after it)
-  const long = await timed(big);
+  const long = await timed(big);   // each on a worker of its own start: the clock does not include the start-up (finding 3)
   const short = await timed(small);
   assert.ok(long >= 1400 && long < 5000, `the big one took ${Math.round(long)} ms`);
   assert.ok(short >= 250 && short < 1000, `the small file took ${Math.round(short)} ms`);
@@ -303,22 +335,51 @@ test('PhotoPool: a worker that says it reads by path gets the long timeout from 
     parentPort.on('message', ({ abs }) => {
       if (abs.startsWith('by-path')) parentPort.postMessage('by-path');
       if (abs.endsWith('hang')) for (;;) {}
-      setTimeout(() => parentPort.postMessage({ width: 1, height: 1, exifDate: null }), abs === 'quick' ? 0 : 700);
-    });`);
+      setTimeout(() => parentPort.postMessage({ width: 1, height: 1, exifDate: null }), 700);
+    });
+    parentPort.postMessage('ready');`);
   const lines: any[] = [];
   t.mock.method(console, 'log', (line: string) => { lines.push(JSON.parse(line)); });
   const pool = new PhotoPool(worker, 1, 400, 2000);
   t.after(() => pool.stop());
-  const done = { width: 1, height: 1, exifDate: null };
-  assert.deepEqual(await pool.run('quick', 'warm up'), done);   // each job below starts on a worker that is up, so what is timed is the job
   assert.equal(await pool.run('plain', 'slow'), null, 'taking 700 ms without a notice is over the short timeout');
-  assert.deepEqual(await pool.run('quick', 'warm up again'), done);
-  assert.deepEqual(await pool.run('by-path', 'path'), done, 'with the notice, 700 ms is well inside the long one');
+  assert.deepEqual(await pool.run('by-path', 'path'), { width: 1, height: 1, exifDate: null }, 'with the notice, 700 ms is well inside the long one');
   const started = performance.now();
   assert.equal(await pool.run('by-path-hang', 'frozen'), null);
   const took = performance.now() - started;
   assert.ok(took >= 1900 && took < 4000, `a frozen job that said so took ${Math.round(took)} ms`);
   assert.deepEqual(lines.map((l) => [l.message, l.rel]), [['Photo metadata timed out', 'slow'], ['Photo metadata timed out', 'frozen']]);
+});
+test('PhotoPool: the clock of a job starts when its worker is ready, so a slow start-up costs the job nothing (finding 3)', { timeout: 20_000 }, async (t) => {
+  const worker = workerFrom(`
+    import { parentPort } from 'node:worker_threads';
+    await new Promise((resolve) => setTimeout(resolve, 700));   // modules loading from a disk that is slow to answer
+    parentPort.on('message', () => parentPort.postMessage({ width: 1, height: 1, exifDate: null }));
+    parentPort.postMessage('ready');`);
+  const lines: any[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(JSON.parse(line)); });
+  const pool = new PhotoPool(worker, 1, 300);
+  t.after(() => pool.stop());
+  const started = performance.now();
+  assert.deepEqual(await pool.run('x', 'slow start'), { width: 1, height: 1, exifDate: null });
+  assert.ok(performance.now() - started >= 650, 'the worker really was slow to start');
+  assert.deepEqual(await pool.run('y', 'next'), { width: 1, height: 1, exifDate: null }, 'and the next job, on the worker that is up, is timed from its start');
+  assert.deepEqual(lines, []);
+});
+test('PhotoPool: a worker that never gets ready is given up on at the start-up limit, and its job answered null (finding 3)', { timeout: 20_000 }, async (t) => {
+  const worker = workerFrom(`
+    setInterval(() => {}, 1000);                    // alive, but never gets as far as saying so
+    await new Promise(() => {});`);
+  const lines: any[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(JSON.parse(line)); });
+  const pool = new PhotoPool(worker, 1, 300);
+  pool.startTimeoutMs = 500;
+  t.after(() => pool.stop());
+  const started = performance.now();
+  assert.equal(await pool.run('x', 'stuck'), null);
+  assert.ok(performance.now() - started >= 450, 'the limit, not the job timeout, ended it');
+  assert.equal(pool.live, 0);
+  assert.deepEqual(lines.map((l) => [l.message, l.rel]), [['Photo metadata worker not ready in time', 'stuck']]);
 });
 test('PhotoPool: no more workers than its size, the rest queued; stop() ends the idle workers and never fails a job', { timeout: 20_000 }, async (t) => {
   const pool = new PhotoPool(FAKE_WORKER, 2, 5000);
@@ -364,6 +425,15 @@ test('runProcess returns stdout, and rejects with the command and its stderr', a
   await assert.rejects(runProcess(node, ['-e', 'setTimeout(() => {}, 20000)'], 200), (err: Error) => err.message.startsWith(`${node} failed: Command failed`));   // killed when the time is up
   assert.ok(Date.now() - started < 10_000);
   await assert.rejects(runProcess('no-such-command-here', [], 1000), { message: /^no-such-command-here failed: .*ENOENT/ });
+});
+test('runProcess ends a tool that ignores SIGTERM when the time is up, instead of waiting for it for good (Ruling A)', { timeout: 20_000 }, async () => {
+  // ffmpeg catches SIGTERM; execFile answers only when the child has gone, so a decoder that stuck would hold its caller (and a limiter slot) for good.
+  // The stand-in ends itself after 8 s, so that a regression fails this test and leaves no process behind.
+  const stubborn = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); setTimeout(() => process.exit(), 8000)";
+  const started = performance.now();
+  await assert.rejects(runProcess(process.execPath, ['-e', stubborn], 1000), (err: Error) => err.message.startsWith(`${process.execPath} failed:`));
+  const took = performance.now() - started;
+  assert.ok(took >= 900 && took < 3000, `it settled after ${Math.round(took)} ms`);
 });
 
 test('member root lists aliases; hidden/unavailable handled', async (t) => {
