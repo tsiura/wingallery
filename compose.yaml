@@ -1,0 +1,21 @@
+services:
+  gallery:
+    build: .
+    restart: unless-stopped      # the server stops on an error it can't explain instead of carrying on; this brings it back
+    user: "1000:1000"            # CHANGE: output of `id -u`:`id -g` — must own ./data and be able to write shared folders
+    environment:
+      TZ: Europe/Moscow          # CHANGE: your timezone (used for video/file dates)
+    volumes:
+      - ./data:/data
+      - /home/user/pictures:/media/pictures      # CHANGE: one line per folder; add :ro if nobody gets Create/Update/Delete there
+    networks: [traefik]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik           # CHANGE: your Traefik network name
+      - traefik.http.routers.gallery.rule=Host(`gallery.example.com`)   # CHANGE
+      - traefik.http.routers.gallery.entrypoints=websecure              # CHANGE if different
+      - traefik.http.routers.gallery.tls.certresolver=letsencrypt       # CHANGE: your resolver name
+      - traefik.http.services.gallery.loadbalancer.server.port=8080
+networks:
+  traefik:
+    external: true               # CHANGE: name of your existing Traefik network

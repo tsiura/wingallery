@@ -481,7 +481,7 @@ function freePort(): Promise<number> {
     s.listen(0, '127.0.0.1', () => { const { port } = s.address() as AddressInfo; s.close(() => resolve(port)); });
   });
 }
-test('main.ts: prints the setup link once, serves, and runs the CLI against the live database', async (t) => {
+test('main.ts: prints the setup link once, serves, keeps idle connections past Traefik\'s 90 s, and runs the CLI against the live database', async (t) => {
   const dataDir = await tempDir(), mediaRoot = await tempDir(), port = await freePort();
   const env = { ...process.env, DATA_DIR: dataDir, MEDIA_ROOT: mediaRoot, PORT: String(port), COOKIE_SECURE: 'false' };
   const node = ['--disable-warning=ExperimentalWarning', join(import.meta.dirname, '..', 'main.ts')];
@@ -497,6 +497,8 @@ test('main.ts: prints the setup link once, serves, and runs the CLI against the 
   assert.match(links[0], /^First run: open https:\/\/<your-domain>\/setup\?token=[A-Za-z0-9_-]{32} to create the admin account$/);
 
   const base = `http://127.0.0.1:${port}`;
+  // Task 20 T1: Traefik reuses a backend connection for up to 90 s of idleness, so Node must not close it earlier (that is a sporadic 502)
+  assert.equal((await fetch(base + '/healthz')).headers.get('keep-alive'), 'timeout=95');
   const post = (path: string, body: object) => fetch(base + path, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const setup = await post('/api/setup', { token: /token=(\S+)/.exec(links[0])![1], username: 'root', displayName: 'Root', password: 'password123' });
   assert.equal(setup.status, 200);

@@ -16,6 +16,10 @@ const db = openDb(join(cfg.dataDir, 'gallery.db'));
 if (process.argv.length > 2) process.exit(await runCli(process.argv.slice(2), cfg, db));
 
 const app = createApp(cfg, db);
+// Traefik keeps a connection to its backend for up to 90 s of idleness and reuses it. Node's default of 5 s would close it first, and the request
+// Traefik then sends on the dead socket fails as a sporadic 502. So stay open longer than Traefik does; headersTimeout has to exceed keepAliveTimeout.
+app.server.keepAliveTimeout = 95_000;
+app.server.headersTimeout = 96_000;
 
 app.server.listen(cfg.port, () => log('listening', { port: cfg.port }));
 // The only place the link is shown (a plain line, not an audit event, so it appears once in the container log).

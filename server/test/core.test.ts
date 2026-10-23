@@ -34,6 +34,12 @@ test('loadConfig rejects non-numeric limits', () => {
   assert.throws(() => loadConfig({ MAX_UPLOAD_MB: '-1' }), /Invalid MAX_UPLOAD_MB: -1/);
   assert.throws(() => loadConfig({ TRASH_DAYS: '1.5' }), /Invalid TRASH_DAYS: 1.5/);
 });
+test('loadConfig refuses TRASH_DAYS below 1: 0 would empty the whole Recycle Bin at every start', () => {
+  assert.throws(() => loadConfig({ TRASH_DAYS: '0' }), /^Error: Invalid TRASH_DAYS: must be 1 or more$/);
+  assert.throws(() => loadConfig({ TRASH_DAYS: '00' }), /^Error: Invalid TRASH_DAYS: must be 1 or more$/);
+  assert.equal(loadConfig({ TRASH_DAYS: '1' }).trashDays, 1);
+  assert.equal(loadConfig({ TRASH_DAYS: '' }).trashDays, 30);   // empty still means the default
+});
 test('openDb migrates once', async () => {
   const f = join(await tempDir(), 'g.db');
   const db = openDb(f);

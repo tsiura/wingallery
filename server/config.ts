@@ -36,6 +36,9 @@ function proxyList(spec: string): BlockList {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  // Everything in the Recycle Bin is older than 0 days, so TRASH_DAYS=0 would empty it at every start and every day.
+  const trashDays = whole(env, 'TRASH_DAYS', 30);
+  if (trashDays < 1) throw new Error('Invalid TRASH_DAYS: must be 1 or more');
   return {
     mediaRoot: resolve(env.MEDIA_ROOT || '/media'),
     dataDir: resolve(env.DATA_DIR || '/data'),
@@ -43,7 +46,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     trustedProxies: proxyList(env.TRUSTED_PROXIES || DEFAULT_PROXIES),
     cookieSecure: env.COOKIE_SECURE !== 'false',
     maxUploadBytes: whole(env, 'MAX_UPLOAD_MB', 10240) * 1024 * 1024,
-    trashDays: whole(env, 'TRASH_DAYS', 30),
+    trashDays,
     webDist: resolve(env.WEB_DIST || join(import.meta.dirname, '..', 'web', 'dist')),
   };
 }
