@@ -164,6 +164,17 @@ test('extractMeta: a photo longer than the first 512 KB is still read in full, a
   await writeFile(long, Buffer.concat([await readFile(fixture('exif-rot6.jpg')), Buffer.alloc(600 * 1024)]));
   assert.deepEqual(await extractMeta(long, 'photo', 0), { width: 48, height: 64, takenAt: '2025-12-24T18:00:00', duration: null });
 });
+test('extractMeta: a HEIC is read by path up to 4 MiB, a bigger one only from its head (R4)', { timeout: 30_000 }, async () => {
+  const MB = 1024 * 1024;
+  const dir = await tempDir();
+  const under = join(dir, 'under.heic'), over = join(dir, 'over.heic');
+  await writeFile(under, heicWithExif(4000, 3000, 6, 3 * MB + 512 * 1024));   // the Exif item is 3.5 MiB in
+  await writeFile(over, heicWithExif(4000, 3000, 6, 4 * MB + 512 * 1024));    // and 4.5 MiB in: out of reach, and so are its size and date
+  assert.deepEqual(await extractMeta(under, 'photo', 0), { width: 3000, height: 4000, takenAt: '2021-06-15T12:34:56', duration: null });
+  const head = await extractMeta(over, 'photo', 0);
+  assert.equal(head.takenAt, instantToWallClock(0));
+  assert.notDeepEqual([head.width, head.height], [3000, 4000]);
+});
 test('extractMeta: a crafted photo over the size cap can not make exifr read the whole file', { timeout: 30_000 }, async () => {
   // exifr reads as many bytes as the file says its Exif data has, clamped only to the file's size; members can upload such a file
   const MB = 1024 * 1024;
@@ -265,6 +276,49 @@ test('PhotoPool: a worker that throws, exits or hangs fails only its job and is 
   assert.equal(pool.live, 1);
   assert.deepEqual(lines.map((l) => [l.message, l.rel]),
     [['Photo metadata crashed', 'thrower'], ['Photo metadata crashed', 'quitter'], ['Photo metadata timed out', 'sleeper']]);
+});
+test('a job is given up on after 3 s, and after 10 s only when it reads a HEIC by path (R4)', () => {
+  assert.deepEqual([photoPool.timeoutMs, photoPool.pathTimeoutMs], [3000, 10_000]);
+});
+test('a frozen small file is given up on at the short timeout, a frozen HEIC read by path at the long one (R4)', { timeout: 30_000 }, async (t) => {
+  const was = [photoPool.timeoutMs, photoPool.pathTimeoutMs];
+  photoPool.timeoutMs = 300; photoPool.pathTimeoutMs = 1500; t.after(() => { [photoPool.timeoutMs, photoPool.pathTimeoutMs] = was; });
+  const lines: any[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(JSON.parse(line)); });
+  const dir = await tempDir();
+  const small = join(dir, 'small.heic'), big = join(dir, 'big.heic');
+  await writeFile(small, FROZEN_HEIC);                                                // 60 bytes: parsed from the head buffer
+  await writeFile(big, Buffer.concat([FROZEN_HEIC, Buffer.alloc(600 * 1024)]));       // longer than the head: exifr is given the path
+  const timed = async (file: string) => { const started = performance.now(); await extractMeta(file, 'photo', 0); return performance.now() - started; };
+  await extractMeta(fixture('plain.png'), 'photo', 0);   // a worker is up, so the long timeout isn't started by a slow start-up (the notice comes after it)
+  const long = await timed(big);
+  const short = await timed(small);
+  assert.ok(long >= 1400 && long < 5000, `the big one took ${Math.round(long)} ms`);
+  assert.ok(short >= 250 && short < 1000, `the small file took ${Math.round(short)} ms`);
+  assert.deepEqual(lines.map((l) => [l.message, l.rel]), [['Photo metadata timed out', big], ['Photo metadata timed out', small]]);
+});
+test('PhotoPool: a worker that says it reads by path gets the long timeout from that moment on (R4)', { timeout: 20_000 }, async (t) => {
+  const worker = workerFrom(`
+    import { parentPort } from 'node:worker_threads';
+    parentPort.on('message', ({ abs }) => {
+      if (abs.startsWith('by-path')) parentPort.postMessage('by-path');
+      if (abs.endsWith('hang')) for (;;) {}
+      setTimeout(() => parentPort.postMessage({ width: 1, height: 1, exifDate: null }), abs === 'quick' ? 0 : 700);
+    });`);
+  const lines: any[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(JSON.parse(line)); });
+  const pool = new PhotoPool(worker, 1, 400, 2000);
+  t.after(() => pool.stop());
+  const done = { width: 1, height: 1, exifDate: null };
+  assert.deepEqual(await pool.run('quick', 'warm up'), done);   // each job below starts on a worker that is up, so what is timed is the job
+  assert.equal(await pool.run('plain', 'slow'), null, 'taking 700 ms without a notice is over the short timeout');
+  assert.deepEqual(await pool.run('quick', 'warm up again'), done);
+  assert.deepEqual(await pool.run('by-path', 'path'), done, 'with the notice, 700 ms is well inside the long one');
+  const started = performance.now();
+  assert.equal(await pool.run('by-path-hang', 'frozen'), null);
+  const took = performance.now() - started;
+  assert.ok(took >= 1900 && took < 4000, `a frozen job that said so took ${Math.round(took)} ms`);
+  assert.deepEqual(lines.map((l) => [l.message, l.rel]), [['Photo metadata timed out', 'slow'], ['Photo metadata timed out', 'frozen']]);
 });
 test('PhotoPool: no more workers than its size, the rest queued; stop() ends the idle workers and never fails a job', { timeout: 20_000 }, async (t) => {
   const pool = new PhotoPool(FAKE_WORKER, 2, 5000);

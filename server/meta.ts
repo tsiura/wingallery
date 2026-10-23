@@ -8,7 +8,7 @@ import type { MediaKind, Meta } from '../shared/types.ts';
 import type { DB } from './db.ts';
 import { pLimit } from './limit.ts';
 import { log } from './log.ts';
-import type { PhotoResult } from './metaworker.ts';
+import type { PhotoResult, WorkerMessage } from './metaworker.ts';
 import { runProcess } from './proc.ts';
 import type { RunFn } from './proc.ts';
 
@@ -36,8 +36,11 @@ interface Job { abs: string; rel: string; resolve: (result: PhotoResult | null) 
 // Parses photos in worker threads, one job per worker at a time and the rest queued behind them. A worker that takes longer than timeoutMs, throws
 // or dies is terminated, and a new one starts when a job next needs it; its job is answered with null. The photo is then listed without size and
 // date, which is stored like any other parse failure, so the folder doesn't freeze again on its next listing. Workers start on the first job.
+// A job that reads a HEIC by path (metaworker.ts says so before it starts) is the one that may be slow on a busy disk: it gets pathTimeoutMs instead,
+// counted from that notice. So a crafted small file that freezes the parser costs the short timeout, not the long one.
 export class PhotoPool {
   timeoutMs: number;
+  pathTimeoutMs: number;
   #entry: URL;
   #size: number;
   #all = new Set<Worker>();
@@ -45,10 +48,11 @@ export class PhotoPool {
   #busy = new Map<Worker, { job: Job; timer: NodeJS.Timeout }>();
   #queue: Job[] = [];
 
-  constructor(entry: URL, size: number, timeoutMs: number) {
+  constructor(entry: URL, size: number, timeoutMs: number, pathTimeoutMs = timeoutMs) {
     this.#entry = entry;
     this.#size = size;
     this.timeoutMs = timeoutMs;
+    this.pathTimeoutMs = pathTimeoutMs;
   }
 
   // How many workers are alive, idle or busy.
@@ -91,7 +95,7 @@ export class PhotoPool {
     const worker = new Worker(this.#entry);
     worker.unref();   // an idle worker must not keep the process alive; a busy one is ref'd for the length of its job
     this.#all.add(worker);
-    worker.on('message', (result: PhotoResult | null) => this.#finish(worker, result));
+    worker.on('message', (message: WorkerMessage) => (message === 'by-path' ? this.#byPath(worker) : this.#finish(worker, message)));
     worker.on('error', (err) => this.#giveUp(worker, 'crashed', err));
     worker.on('exit', () => this.#giveUp(worker, 'crashed'));
     return worker;
@@ -101,6 +105,14 @@ export class PhotoPool {
     worker.ref();
     this.#busy.set(worker, { job, timer: setTimeout(() => this.#giveUp(worker, 'timed out'), this.timeoutMs) });
     worker.postMessage({ abs: job.abs });
+  }
+
+  // The job is about to read its file by path: the clock starts again, with the longer timeout.
+  #byPath(worker: Worker): void {
+    const busy = this.#busy.get(worker);
+    if (!busy) return;   // given up on in the meantime
+    clearTimeout(busy.timer);
+    busy.timer = setTimeout(() => this.#giveUp(worker, 'timed out'), this.pathTimeoutMs);
   }
 
   #finish(worker: Worker, result: PhotoResult | null): void {
@@ -137,8 +149,8 @@ export class PhotoPool {
   }
 }
 
-// Up to four workers, fewer on a machine with fewer cores, each given up on after 10 s. Tests shorten timeoutMs.
-export const photoPool = new PhotoPool(new URL('./metaworker.ts', import.meta.url), Math.min(4, availableParallelism()), 10_000);
+// Up to four workers, fewer on a machine with fewer cores. A job is given up on after 3 s, or after 10 s once it reads a HEIC by path. Tests shorten both.
+export const photoPool = new PhotoPool(new URL('./metaworker.ts', import.meta.url), Math.min(4, availableParallelism()), 3_000, 10_000);
 
 async function photoMeta(abs: string, mtimeMs: number, rel: string): Promise<Meta> {
   const found = await photoPool.run(abs, rel);
