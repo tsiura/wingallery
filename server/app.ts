@@ -4,6 +4,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { registerAdminRoutes } from './adminroutes.ts';
 import { LoginLimiter, SESSION_COOKIE, sessionCookie, touchSession } from './auth.ts';
 import { registerAuthRoutes } from './authroutes.ts';
+import { registerBrowseRoutes } from './browseroutes.ts';
 import type { Config } from './config.ts';
 import type { DB } from './db.ts';
 import { HttpError, Router, clientInfo, parseCookies, securityHeaders, sendJson } from './http.ts';
@@ -84,5 +85,6 @@ export function createApp(cfg: Config, db: DB): App {
   };
   registerAuthRoutes(app);
   registerAdminRoutes(app);
+  registerBrowseRoutes(app);
   return app;
 }
