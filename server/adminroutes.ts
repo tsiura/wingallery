@@ -1,4 +1,4 @@
-// The administrator's endpoints: users, their passwords and shares, and the folder picker. Each handler starts with requireAdmin,
+// The administrator's endpoints: users, their passwords and shares, the folder picker and the Recycle Bin. Each handler starts with requireAdmin,
 // before it looks at the id, the body or anything else; every change is logged with the administrator who made it (R3).
 
 import type { AdminUser } from '../shared/types.ts';
@@ -9,6 +9,7 @@ import type { Ctx } from './http.ts';
 import { log } from './log.ts';
 import { addShare, browseDisk, getShare, listShareInfo, removeShare, updateShare } from './shares.ts';
 import type { ShareInput, SharePatch } from './shares.ts';
+import { emptyTrash, listTrash, purgeTrash, restoreTrash } from './trash.ts';
 import { createUser, getAdminUser, listUsers, removeUser, setPassword, updateUser } from './users.ts';
 import type { UserPatch } from './users.ts';
 import type { ShareRow } from './vpath.ts';
@@ -118,4 +119,27 @@ export function registerAdminRoutes(app: App): void {
   });
 
   router.add('GET', '/api/admin/browse', (ctx) => browseDisk(cfg, requireAdmin(ctx), ctx.url.searchParams.get('path') ?? ''));
+
+  router.add('GET', '/api/admin/trash', (ctx) => {
+    requireAdmin(ctx);
+    return { items: listTrash(cfg, db), trashDays: cfg.trashDays };
+  });
+
+  // The id is a key into the trash table and no more (R1): the functions answer 404 for one that names no row, and take every path from the row.
+  router.add('POST', '/api/admin/trash/:id/restore', (ctx) => {
+    const admin = requireAdmin(ctx);
+    return restoreTrash(cfg, db, ctx.params.id, admin.username);
+  });
+
+  router.add('DELETE', '/api/admin/trash/:id', async (ctx) => {
+    const admin = requireAdmin(ctx);
+    await purgeTrash(cfg, db, ctx.params.id, admin.username);
+    return { ok: true };
+  });
+
+  router.add('DELETE', '/api/admin/trash', async (ctx) => {
+    const admin = requireAdmin(ctx);
+    await emptyTrash(cfg, db, admin.username);
+    return { ok: true };
+  });
 }
