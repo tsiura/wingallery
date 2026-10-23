@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, HTMLAttributes, KeyboardEvent } from 'react';
+import type { CSSProperties, HTMLAttributes, KeyboardEvent, RefObject } from 'react';
 import type { Entry, FileEntry, ViewMode } from '../../../shared/types.ts';
 import { thumbUrl } from '../api.ts';
 import { fmtDate, fmtDur, fmtEpoch, fmtSize } from '../lib/format.ts';
@@ -117,7 +117,8 @@ function Tile({ entry, vpath, picking, checked, dom }: ItemProps) {
   );
 }
 
-// One item of the Details table (design lines 184-201). A folder has a date and a type, and no size or dimensions (spec 5.2.12).
+// One item of the Details table (design lines 184-201). A folder has a date and a type, and in the Size column how many items it holds, as its tile says
+// (spec 5.2.12); it has no dimensions. A cover would not fit in a row, so only the tiles have one.
 function Row({ entry, vpath, picking, checked, dom, phone }: ItemProps & { phone: boolean }) {
   const gone = entry.kind === 'folder' && entry.unavailable === true;
   const cell: CSSProperties = { padding: '0 8px', color: '#5c616b', ...ellipsis };
@@ -137,7 +138,9 @@ function Row({ entry, vpath, picking, checked, dom, phone }: ItemProps & { phone
       {!phone && (
         <>
           <div style={cell}>{entry.kind === 'folder' ? 'File folder' : entry.type}</div>
-          <div style={{ ...cell, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{entry.kind === 'folder' ? '' : fmtSize(entry.size)}</div>
+          <div style={{ ...cell, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+            {entry.kind === 'folder' ? (gone ? '' : `${entry.count} items`) : fmtSize(entry.size)}
+          </div>
           <div style={{ ...cell, fontVariantNumeric: 'tabular-nums' }}>{entry.kind === 'folder' ? '' : dimsOf(entry)}</div>
         </>
       )}
@@ -147,18 +150,19 @@ function Row({ entry, vpath, picking, checked, dom, phone }: ItemProps & { phone
 
 // The folder's items as tiles or as the Details table (design lines 137-207). `entries` are what is shown, in order, and `sel` is which of them are selected;
 // Explorer owns both, and answers `onClick` (a click on an item, with the modifier keys), `onSelectAll`, `onClear` (a click on the empty space), `onOpen`
-// and, for the keys that act on the selection (Delete, F2), `onKey`.
+// and, for the keys that act on the selection (Delete, F2), `onKey`. `pane` is the scrolling pane that takes the keys: Explorer gives the focus back to it
+// when an action is over.
 //
 // With a mouse: click selects, Ctrl/Cmd+click toggles, Shift+click selects a range, double-click opens. With a finger a tap opens, and a long press
 // (500 ms) starts selection mode: the items get a tick, a tap toggles, and it ends when nothing is selected any more or with "Done". There is no flag for
 // the mode: it is a selection while the last press (anywhere in the page) was a finger's, so "Select all" by finger starts it too.
 // With the keyboard: the arrows move the focus, Enter opens the focused item, Space toggles it, Ctrl/Cmd+A selects all.
-export function Items({ entries, vpath, view, sortKey, sortDir, onSort, sel, onClick: select, onSelectAll, onOpen, onClear, onKey }: {
+export function Items({ entries, vpath, view, sortKey, sortDir, onSort, sel, onClick: select, onSelectAll, onOpen, onClear, onKey, pane }: {
   entries: Entry[]; vpath: string; view: ViewMode; sortKey: SortKey; sortDir: 1 | -1; onSort(key: SortKey): void;
   sel: Sel; onClick(name: string, mods: Mods): void; onSelectAll(): void; onOpen(entry: Entry): void; onClear(): void; onKey?(e: KeyboardEvent<HTMLElement>): void;
+  pane: RefObject<HTMLDivElement | null>;
 }) {
   const phone = useNarrow();
-  const scroller = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);                                  // its children are the items
   const [cursor, setCursor] = useState<string | null>(null);                  // the item that last had the focus: Tab comes back to it
   const [touch, setTouch] = useState(false);                                  // the last press anywhere was a finger's
@@ -180,7 +184,7 @@ export function Items({ entries, vpath, view, sortKey, sortDir, onSort, sel, onC
   }, []);
 
   // A folder just opened has lost the item that opened it. The keys work on this pane, so it takes the focus, unless something else (the search box, the tree) has it.
-  useEffect(() => { if (document.activeElement === document.body) scroller.current?.focus({ preventScroll: true }); }, []);
+  useEffect(() => { if (document.activeElement === document.body) pane.current?.focus({ preventScroll: true }); }, []);
 
   const domOf = (entry: Entry): HTMLAttributes<HTMLDivElement> => {
     const name = entry.name;
@@ -243,7 +247,7 @@ export function Items({ entries, vpath, view, sortKey, sortDir, onSort, sel, onC
   const listProps = { ref: list, role: 'listbox', 'aria-multiselectable': true, 'aria-label': 'Items' } as const;
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-      <div ref={scroller} tabIndex={-1} onClick={onClear} onKeyDown={onKeyDown} style={{ flex: 1, minHeight: 0, overflow: 'auto', outline: 'none' }}>
+      <div ref={pane} tabIndex={-1} onClick={onClear} onKeyDown={onKeyDown} style={{ flex: 1, minHeight: 0, overflow: 'auto', outline: 'none' }}>
         {rows ? (
           <div style={{ minWidth: phone ? undefined : 640 }}>
             <div style={{
