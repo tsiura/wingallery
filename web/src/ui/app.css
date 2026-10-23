@@ -72,6 +72,12 @@ input[type=range] { accent-color: #005fb8; }
 .col-head { display: flex; align-items: center; gap: 6px; padding: 0 8px; border: none; border-right: 1px solid #f0f1f4; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .col-head:focus-visible { outline-offset: -2px; }
 
+/* The viewer (slideshow/Player.tsx): the design's square and round buttons on the dark stage. */
+.pl-btn { width: 36px; height: 36px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; padding: 0; border: none; border-radius: 6px; background: transparent; color: #fff; cursor: pointer; }
+.pl-round { width: 40px; height: 40px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; padding: 0; border: none; border-radius: 50%; background: rgba(255, 255, 255, .08); color: #fff; cursor: pointer; }
+.pl-round.main { width: 48px; height: 48px; background: #fff; color: #0b0c0e; }
+.pl-btn:focus-visible, .pl-round:focus-visible { outline-color: #4ca0ff; }   /* the page's blue is too dark for the stage */
+
 /* Their hover colours, for a pointer that can hover only: on a phone :hover sticks to what was tapped last. The item's hover ring comes after the selected
    one and so wins over it, as in the design. */
 @media (hover: hover) {
@@ -79,6 +85,9 @@ input[type=range] { accent-color: #005fb8; }
   .tool-btn.primary:hover { background: #0a6ccc; }
   .item:hover { box-shadow: inset 0 0 0 1px #c9d6e6; }
   .col-head:hover { background: #f5f7fa; }
+  .pl-btn:hover { background: rgba(255, 255, 255, .1); }
+  .pl-round:hover { background: rgba(255, 255, 255, .16); }
+  .pl-round.main:hover { background: #fff; }
 }
 
 @media (max-width: 699px) {
@@ -91,4 +100,5 @@ input[type=range] { accent-color: #005fb8; }
   .tree-chev { width: 28px; height: 28px; }
   .tool-btn { height: 36px; }
   .view-btn { height: 34px; }
+  .pl-btn { width: 40px; height: 40px; }
 }

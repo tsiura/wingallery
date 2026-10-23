@@ -9,6 +9,8 @@ import { applyClick, NO_SELECTION, pruneSel, selectAll } from '../lib/selection.
 import type { Mods, Sel } from '../lib/selection.ts';
 import { cycleSort, sortEntries } from '../lib/sort.ts';
 import type { SortKey } from '../lib/sort.ts';
+import { useSlideshow } from '../slideshow/useSlideshow.tsx';
+import { useAfterClose } from '../ui/hooks.ts';
 import { CommandBar } from './CommandBar.tsx';
 import { Items } from './Items.tsx';
 import { Sidebar } from './Sidebar.tsx';
@@ -26,7 +28,8 @@ function Message({ children }: { children: ReactNode }) {
 // The window's frame: title bar, command bar, folder tree and status bar around the folder that the address names. The address is the folder: every
 // move pushes /browse/<path> onto the browser's history and Back, Forward and a reload come back here.
 // The actions on the folder's items are here too, in two pieces of their own: `Uploads` (the upload queue, the drop, the progress panel) and `useFileActions` (new
-// folder, rename, move, delete, download: the bar's buttons and the keys ask, the dialogs answer).
+// folder, rename, move, delete, download: the bar's buttons and the keys ask, the dialogs answer). A file opens in the viewer and the bar's Slideshow asks how to play:
+// `useSlideshow`.
 // `onMeChange` is for the settings window, which changes the signed-in user's own preferences.
 export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; onSignOut(): Promise<void> }) {
   const [vpath, setVpath] = useState(() => vpathFromLocation(location.pathname));
@@ -77,6 +80,7 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
     setQuery('');
     setRawSel(NO_SELECTION);
     ops.reset();
+    slide.close();
     setDrawerOpen(false);
     void load(path);
   }
@@ -101,10 +105,8 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
   // What the pane shows: the folder's items that the search lets through, in the order asked for. Only what is in sight can be selected, so a search that
   // hides a selected item (or a reload that loses it) takes it out of the selection too: an action on the selection never reaches what you can't see.
   const needle = query.trim().toLowerCase();
-  const shown = useMemo(
-    () => sortEntries(listing ? listing.entries.filter((e) => e.name.toLowerCase().includes(needle)) : [], sort.key, sort.dir),
-    [listing, needle, sort],
-  );
+  const sorted = useMemo(() => sortEntries(listing ? listing.entries : [], sort.key, sort.dir), [listing, sort]);
+  const shown = useMemo(() => (needle ? sorted.filter((e) => e.name.toLowerCase().includes(needle)) : sorted), [sorted, needle]);
   const order = useMemo(() => shown.map((e) => e.name), [shown]);
   const live = useMemo(() => pruneSel(rawSel, order), [rawSel, order]);
   const picked = useMemo(() => {
@@ -126,10 +128,18 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
     role: me.role, vpath, at, picked, actions, folderSize: listing?.entries.length ?? 0, scopeRoot: scopeRootOf(vpath), reload, changed, focusPane,
   });
 
+  const slide = useSlideshow({ me, vpath, listing, sorted, shown, picked });
+  // When the options window or the stage is over, the keys work again without a click: the focus stays on the item that opened the viewer, and otherwise (the bar's
+  // button has it back, or the item is gone) goes to the pane.
+  useAfterClose(slide.active, () => { if (!pane.current?.contains(document.activeElement)) focusPane(); });
+
   const click = (name: string, mods: Mods) => setRawSel((s) => applyClick(pruneSel(s, order), order, name, mods));
   const everything = () => setRawSel(selectAll(order));
-  // A folder opens here; a file will open in the viewer, which is its own piece of work, so for now it does nothing. A share whose folder is gone can't be opened.
-  const open = (entry: Entry) => { if (entry.kind === 'folder' && !entry.unavailable) navigate(joinV(vpath, entry.name)); };
+  // A folder opens here (a share whose folder is gone can't be opened), a file in the viewer.
+  const open = (entry: Entry) => {
+    if (entry.kind !== 'folder') slide.view(entry);
+    else if (!entry.unavailable) navigate(joinV(vpath, entry.name));
+  };
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#eef1f5', overflow: 'hidden' }}>
@@ -147,7 +157,7 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
             <Toolbar view={view} onView={setView} sortKey={sort.key} sortDir={sort.dir}
               onCycleSort={() => setSort((s) => ({ key: cycleSort(s.key), dir: 1 }))}
               allSelected={live.selected.length > 0} onSelectAll={() => (live.selected.length > 0 ? setRawSel(NO_SELECTION) : everything())}
-              onSlideshow={() => {}} readOnly={readOnly}>
+              onSlideshow={slide.configure} readOnly={readOnly}>
               <ToolbarActions actions={actions} many={rights !== undefined && mostActions(rights) >= 4} on={{ upload: () => picker.current?.click(), ...ops.on }} />
             </Toolbar>
           )}
@@ -172,6 +182,7 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
       </div>
       <Uploads area={main} picker={picker} vpath={vpath} canUpload={actions.upload} onNotice={ops.setNotice} onUploaded={reload} onPicked={focusPane} />
       {ops.dialogs}
+      {slide.ui}
     </div>
   );
 }

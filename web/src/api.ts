@@ -42,6 +42,17 @@ export const thumbUrl = (vpath: string, mtime: number): string => `/media/thumb?
 export const viewUrl = (vpath: string): string => `/media/view?path=${q(vpath)}`;
 export const downloadUrl = (vpath: string): string => `/media/download?path=${q(vpath)}`;
 
+// Saves one media file as it is on disk: a click on a link that says "download", never `location.href`, which would take the page away when the server refuses (404).
+// The browser then shows a failed download and the app stays where it is.
+export function saveFile(vpath: string): void {
+  const link = document.createElement('a');
+  link.href = downloadUrl(vpath);
+  link.download = '';
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
 let zips = 0;
 
 // Downloads a zip of the given virtual paths. A form POST (the selection can be too long for a URL) into a hidden iframe: a zip is a download and never renders,

@@ -11,21 +11,24 @@ import { Button, Dialog, Field } from '../ui/controls.tsx';
 import { Chevron, Icon } from '../ui/Icon.tsx';
 
 // The card: a title (and a line under it), the body, and the buttons in the grey strip. A form, so that Enter in a field is a click on the submit button.
-function Frame({ title, sub, footer, onSubmit, children, ref }: { title: string; sub?: string; footer: ReactNode; onSubmit(): void; children: ReactNode; ref?: Ref<HTMLFormElement> }) {
+// `gap` is the space between the parts of the body: 14 px, and the slideshow's window has 18 px (design line 227).
+export function Frame({ title, sub, gap = 14, footer, onSubmit, children, ref }: {
+  title: string; sub?: ReactNode; gap?: number; footer: ReactNode; onSubmit(): void; children: ReactNode; ref?: Ref<HTMLFormElement>;
+}) {
   return (
     <form ref={ref} onSubmit={(e) => { e.preventDefault(); onSubmit(); }}>
       <div style={{ padding: '22px 24px 6px' }}>
         <div style={{ fontSize: 18, fontWeight: 600 }}>{title}</div>
         {sub && <div style={{ color: '#5c616b', marginTop: 4 }}>{sub}</div>}
       </div>
-      <div style={{ padding: '14px 24px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>{children}</div>
+      <div style={{ padding: '14px 24px 20px', display: 'flex', flexDirection: 'column', gap }}>{children}</div>
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', padding: '16px 24px', background: '#f1f3f6', borderTop: '1px solid #e6e8ec' }}>{footer}</div>
     </form>
   );
 }
 
 // What a dialog shows when the server refuses: its own words, in red. The dialog stays open, so the user can change the name and try again.
-const Alert = ({ message }: { message: string }) => (message ? <div role="alert" style={{ color: '#a4373a' }}>{message}</div> : null);
+export const Alert = ({ message }: { message: string }) => (message ? <div role="alert" style={{ color: '#a4373a' }}>{message}</div> : null);
 
 // A request in a dialog: `busy` while it is out, the server's message in `error` when it is refused, and `onClose` once it has gone through.
 function useSubmit(action: () => Promise<void>, onClose: () => void) {

@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import type { KeyboardEvent, ReactNode, RefObject } from 'react';
 import type { DeletePreview, Entry, Me } from '../../../shared/types.ts';
-import { api, downloadUrl, submitZip } from '../api.ts';
+import { api, saveFile, submitZip } from '../api.ts';
 import { deleteWords, downloadPlan, ZIP_LIMIT } from '../lib/actions.ts';
 import type { ActionState } from '../lib/actions.ts';
 import { joinV } from '../lib/route.ts';
+import { useAfterClose } from '../ui/hooks.ts';
 import { Icon } from '../ui/Icon.tsx';
 import { ConfirmDialog, MoveDialog, PromptDialog } from './Dialogs.tsx';
 
@@ -19,16 +20,6 @@ function Notice({ children, onDismiss }: { children: ReactNode; onDismiss(): voi
       <button type="button" className="bar-btn" title="Dismiss" aria-label="Dismiss" onClick={onDismiss} style={{ width: 24, height: 24, padding: 0, flexShrink: 0 }}><Icon name="close" size={12} /></button>
     </div>
   );
-}
-
-// R4: a click on a link that says "download", not a navigation. When the server refuses (404) the browser shows a failed download and the app stays where it is.
-function saveFile(vpath: string): void {
-  const link = document.createElement('a');
-  link.href = downloadUrl(vpath);
-  link.download = '';
-  document.body.append(link);
-  link.click();
-  link.remove();
 }
 
 // The dialog that is open, if any, with what it is about. A delete is about the paths that were asked about, which are the ones it deletes (not whatever is
@@ -49,12 +40,7 @@ export function useFileActions({ role, vpath, at, picked, actions, folderSize, s
 
   // R7: when a dialog is over, however it ended, the keys (arrows, Ctrl+A, Delete, F2) work again without a click: the focus goes to the items pane. This runs after
   // the dialog's own cleanup, which gives the focus back to the button or item that opened it.
-  const dialogOpen = dialog !== null;
-  const wasOpen = useRef(false);
-  useEffect(() => {
-    if (wasOpen.current && !dialogOpen) focusPane();
-    wasOpen.current = dialogOpen;
-  }, [dialogOpen]);
+  useAfterClose(dialog !== null, focusPane);
 
   const pathOf = (name: string) => joinV(vpath, name);
   const closeDialog = () => setDialog(null);
