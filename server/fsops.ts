@@ -43,7 +43,7 @@ export function mapFsError(e: unknown): never {
 export const mutationQueue = pLimit(1);
 
 // Whether anything is at `abs`, a dangling symlink included.
-const taken = (abs: string): Promise<boolean> => lstat(abs).then(() => true, (e) => ((e as NodeJS.ErrnoException).code === 'ENOENT' ? false : mapFsError(e)));
+export const taken = (abs: string): Promise<boolean> => lstat(abs).then(() => true, (e) => ((e as NodeJS.ErrnoException).code === 'ENOENT' ? false : mapFsError(e)));
 
 // Only a member's root has no disk path, and the rights and protection checks refuse it before anyone asks for one (G8).
 function diskPath(loc: Loc): string {

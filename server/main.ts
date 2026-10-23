@@ -6,6 +6,7 @@ import { loadConfig } from './config.ts';
 import { openDb } from './db.ts';
 import { log } from './log.ts';
 import { purgeExpired } from './trash.ts';
+import { cleanupUploads } from './uploads.ts';
 
 const cfg = loadConfig();
 mkdirSync(cfg.dataDir, { recursive: true });
@@ -19,10 +20,13 @@ const app = createApp(cfg, db);
 app.server.listen(cfg.port, () => log('listening', { port: cfg.port }));
 // The only place the link is shown (a plain line, not an audit event, so it appears once in the container log).
 if (app.setupToken) console.log(`First run: open https://<your-domain>/setup?token=${app.setupToken} to create the admin account`);
+const logFailure = (err: unknown) =>
+  log('error', { message: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined });
 // What has been in the Recycle Bin longer than TRASH_DAYS goes when the server starts and then once a day. A failure is logged, and the next run tries again.
-const purgeBin = () => purgeExpired(cfg, db, cfg.trashDays).catch((err) =>
-  log('error', { message: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined }));
+const purgeBin = () => purgeExpired(cfg, db, cfg.trashDays).catch(logFailure);
 void purgeBin();
 setInterval(() => void purgeBin(), 24 * 60 * 60 * 1000).unref();
+// Uploads nobody has sent a chunk to for 24 h are dropped with their temp files, checked once an hour.
+setInterval(() => void cleanupUploads(db).catch(logFailure), 60 * 60 * 1000).unref();
 for (const signal of ['SIGTERM', 'SIGINT'] as const)
   process.on(signal, () => void app.close().then(() => process.exit(0)));

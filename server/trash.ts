@@ -11,7 +11,7 @@ import type { DeletePreview, Me, TrashItem } from '../shared/types.ts';
 import type { App } from './app.ts';
 import type { Config } from './config.ts';
 import type { DB } from './db.ts';
-import { mapFsError, mutationQueue } from './fsops.ts';
+import { mapFsError, mutationQueue, taken } from './fsops.ts';
 import { HttpError } from './http.ts';
 import { invalidateStats } from './listing.ts';
 import { log } from './log.ts';
@@ -35,9 +35,6 @@ function rowOf(db: DB, id: string): TrashRow {
 
 const binDir = (cfg: Config, row: TrashRow) => join(cfg.mediaRoot, row.top_rel, TRASH_DIR, row.id);
 const forget = (db: DB, id: string) => db.prepare('delete from trash where id = ?').run(id);
-
-// Whether anything is at `abs`, a dangling symlink included. The same check as fsops makes (which keeps its own to itself).
-const taken = (abs: string): Promise<boolean> => lstat(abs).then(() => true, (e) => ((e as NodeJS.ErrnoException).code === 'ENOENT' ? false : mapFsError(e)));
 
 interface Item { abs: string; rel: string; isDir: boolean; size: number }
 
