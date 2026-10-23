@@ -8,7 +8,7 @@ services:
     volumes:
       - ./data:/data
       - /home/user/pictures:/media/pictures      # CHANGE: one line per folder; add :ro if nobody gets Create/Update/Delete there
-    networks: [traefik]
+    networks: [traefik]          # CHANGE: your Traefik network name (the same name in the 3 places marked so)
     labels:
       - traefik.enable=true
       - traefik.docker.network=traefik           # CHANGE: your Traefik network name
@@ -17,5 +17,5 @@ services:
       - traefik.http.routers.gallery.tls.certresolver=letsencrypt       # CHANGE: your resolver name
       - traefik.http.services.gallery.loadbalancer.server.port=8080
 networks:
-  traefik:
-    external: true               # CHANGE: name of your existing Traefik network
+  traefik:                       # CHANGE: name of your existing Traefik network
+    external: true

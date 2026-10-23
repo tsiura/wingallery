@@ -4,7 +4,7 @@ A self-hosted photo and video gallery that looks and behaves like Windows 11 Fil
 
 ## Requirements
 
-- Docker Engine 25 or newer with the Compose plugin (`docker compose`). The image is built on the machine that runs it, on amd64 or arm64; there is no registry to pull from.
+- Docker Engine 20.10 or newer with the Compose v2 plugin (`docker compose`). Synology Container Manager works. The image is built on the machine that runs it, on amd64 or arm64; there is no registry to pull from.
 - Traefik (v3 assumed) that is already running, with a domain pointing at it, an HTTPS entrypoint and a certificate resolver. TLS ends at Traefik; the gallery speaks plain HTTP inside the container.
 - The folders you want to share, on the disks of the machine that runs the container.
 
@@ -25,7 +25,7 @@ Run everything from the project folder, the one that contains `compose.yaml`.
    | `user` | The output of `id -u` and `id -g` for the account that owns your photo folders, as `"uid:gid"`. That account must own `./data` and, for any folder people may change, be able to write to it. |
    | `TZ` | Your timezone, for example `Europe/Berlin`. It is used for video and file dates. |
    | `volumes` | One line per folder you share. See [Adding folders](#adding-folders). |
-   | `networks: [traefik]`, the `traefik.docker.network` label, and `traefik:` under `networks:` at the bottom | The name of the Docker network your Traefik is on (`docker network ls` lists them). It is the same name in all three places. |
+   | `networks: [traefik]`, the `traefik.docker.network` label, and `traefik:` under `networks:` at the bottom | The name of the Docker network your Traefik is on (`docker network ls` lists them). It appears in these three places, each marked `# CHANGE`; use the same name in all three. |
    | `...routers.gallery.rule` | Your domain: ``Host(`gallery.example.com`)``. |
    | `...routers.gallery.entrypoints` | Your HTTPS entrypoint, usually `websecure`. |
    | `...routers.gallery.tls.certresolver` | The name of your certificate resolver, from Traefik's static configuration. |
@@ -36,7 +36,7 @@ Run everything from the project folder, the one that contains `compose.yaml`.
    docker compose up -d --build
    ```
 
-   The first build takes a few minutes. `docker compose ps` shows `healthy` a few seconds after the start. Traefik answers 404 for the gallery until then, because it routes only to healthy containers.
+   The first build takes a few minutes. `docker compose ps` shows `healthy` within about 30 seconds of the start. Traefik answers 404 for the gallery until then, because it routes only to healthy containers.
 
 4. Create the administrator. While there are no users, the gallery prints a one-time setup link to its log when it starts:
 
