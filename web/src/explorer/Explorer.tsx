@@ -1,13 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { Listing, Me } from '../../../shared/types.ts';
+import type { Entry, Listing, Me, ViewMode } from '../../../shared/types.ts';
 import { api, q } from '../api.ts';
 import { canBack, canForward, placeAt, popped, pushed } from '../lib/nav.ts';
-import { browseHref, parentOf, vpathFromLocation } from '../lib/route.ts';
+import { browseHref, joinV, parentOf, vpathFromLocation } from '../lib/route.ts';
+import { applyClick, NO_SELECTION, pruneSel, selectAll } from '../lib/selection.ts';
+import type { Mods, Sel } from '../lib/selection.ts';
+import { cycleSort, sortEntries } from '../lib/sort.ts';
+import type { SortKey } from '../lib/sort.ts';
 import { CommandBar } from './CommandBar.tsx';
+import { Items } from './Items.tsx';
 import { Sidebar } from './Sidebar.tsx';
 import { StatusBar } from './StatusBar.tsx';
 import { TitleBar } from './TitleBar.tsx';
+import { Toolbar } from './Toolbar.tsx';
 
 // What the pane says when there is nothing to show: the design's text for an empty folder.
 function Message({ children }: { children: ReactNode }) {
@@ -25,6 +31,9 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
   const [query, setQuery] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [view, setView] = useState<ViewMode>(me.prefs.defaultView);   // the Settings window edits the preference; the toolbar's switch is for this visit only
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'name', dir: 1 });
+  const [sel, setSel] = useState<Sel>(NO_SELECTION);
   const at = useRef(vpath);      // the folder the Explorer is in, for code that outlives a render (a reload that ends after you moved on)
   const newest = useRef(0);      // the number of the latest listing request: only its answer is used
 
@@ -51,6 +60,7 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
     setListing(null);
     setError(null);
     setQuery('');
+    setSel(NO_SELECTION);
     setDrawerOpen(false);
     void load(path);
   }
@@ -72,6 +82,23 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
   const up = () => { const parent = parentOf(vpath); if (parent !== null) navigate(parent); };
   const noShares = me.role === 'member' && vpath === '/' && listing?.entries.length === 0;   // a member's root lists their shares, and there are none
 
+  // What the pane shows: the folder's items that the search lets through, in the order asked for. Only what is in sight can be selected, so a search that
+  // hides a selected item (or a reload that loses it) takes it out of the selection too: an action on the selection never reaches what you can't see.
+  const needle = query.trim().toLowerCase();
+  const shown = useMemo(
+    () => sortEntries(listing ? listing.entries.filter((e) => e.name.toLowerCase().includes(needle)) : [], sort.key, sort.dir),
+    [listing, needle, sort],
+  );
+  const order = useMemo(() => shown.map((e) => e.name), [shown]);
+  const live = useMemo(() => pruneSel(sel, order), [sel, order]);
+  const rights = listing?.rights;
+  const readOnly = vpath !== '/' && rights !== undefined && !rights.create && !rights.update && !rights.delete;
+
+  const click = (name: string, mods: Mods) => setSel((s) => applyClick(pruneSel(s, order), order, name, mods));
+  const everything = () => setSel(selectAll(order));
+  // A folder opens here; a file will open in the viewer, which is its own piece of work, so for now it does nothing. A share whose folder is gone can't be opened.
+  const open = (entry: Entry) => { if (entry.kind === 'folder' && !entry.unavailable) navigate(joinV(vpath, entry.name)); };
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#eef1f5', overflow: 'hidden' }}>
       {/* The settings window is its own piece of work; until it exists the account menu's entries only close the menu. */}
@@ -84,15 +111,28 @@ export function Explorer({ me, onSignOut }: { me: Me; onMeChange(me: Me): void; 
           flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: '#fff', borderTopLeftRadius: 8,
           border: '1px solid #e1e4ea', borderRight: 'none', borderBottom: 'none',
         }}>
-          <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-            {error !== null ? (
-              <Message>
-                <div>This folder is unavailable.</div>
-                <div style={{ marginTop: 8 }}><a href={browseHref('/')} onClick={(e) => { e.preventDefault(); navigate('/'); }}>Go to Home Gallery</a></div>
-              </Message>
-            ) : noShares ? <Message>No folders are shared with you yet.</Message> : null}
-          </div>
-          {listing && <StatusBar entries={listing.entries} selected={[]} />}
+          {error === null && !noShares && (
+            <Toolbar view={view} onView={setView} sortKey={sort.key} sortDir={sort.dir}
+              onCycleSort={() => setSort((s) => ({ key: cycleSort(s.key), dir: 1 }))}
+              allSelected={live.selected.length > 0} onSelectAll={() => (live.selected.length > 0 ? setSel(NO_SELECTION) : everything())}
+              onSlideshow={() => {}} readOnly={readOnly} />
+          )}
+          {listing && shown.length > 0 ? (
+            <Items entries={shown} vpath={vpath} view={view} sortKey={sort.key} sortDir={sort.dir}
+              onSort={(key) => setSort((s) => ({ key, dir: s.key === key ? (s.dir === 1 ? -1 : 1) : 1 }))}
+              sel={live} onClick={click} onSelectAll={everything} onOpen={open} onClear={() => setSel((s) => (s.selected.length > 0 ? NO_SELECTION : s))} />
+          ) : (
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              {error !== null ? (
+                <Message>
+                  <div>This folder is unavailable.</div>
+                  <div style={{ marginTop: 8 }}><a href={browseHref('/')} onClick={(e) => { e.preventDefault(); navigate('/'); }}>Go to Home Gallery</a></div>
+                </Message>
+              ) : noShares ? <Message>No folders are shared with you yet.</Message>
+                : listing ? <Message>{needle ? `No items match “${query.trim()}”.` : 'This folder is empty.'}</Message> : null}
+            </div>
+          )}
+          {listing && <StatusBar entries={shown} all={listing.entries} selected={live.selected} />}
         </main>
       </div>
     </div>

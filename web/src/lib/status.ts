@@ -3,10 +3,11 @@
 import type { Entry } from '../../../shared/types.ts';
 import { fmtSize } from './format.ts';
 
-// "12 items  ·  9 photos, 3 videos"; a folder with no files in it has no second part.
-export function statusCount(entries: readonly Entry[]): string {
-  const photos = entries.filter((e) => e.kind === 'photo').length;
-  const videos = entries.filter((e) => e.kind === 'video').length;
+// "12 items  ·  9 photos, 3 videos"; a folder with no files in it has no second part. A search narrows the items (`entries`) but not the photos and videos,
+// which are the whole folder's (`all`), as in the design.
+export function statusCount(entries: readonly Entry[], all: readonly Entry[] = entries): string {
+  const photos = all.filter((e) => e.kind === 'photo').length;
+  const videos = all.filter((e) => e.kind === 'video').length;
   return `${entries.length} items` + (photos + videos > 0 ? `  ·  ${photos} photos, ${videos} videos` : '');
 }
 

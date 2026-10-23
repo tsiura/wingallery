@@ -55,6 +55,31 @@ input[type=range] { accent-color: #005fb8; }
 .tree-row:focus-visible { outline-offset: -2px; }
 .tree-chev { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; border-radius: 3px; transition: transform .15s; }
 
+/* The toolbar (explorer/Toolbar.tsx): the design's buttons. It scrolls sideways, so the focus rings go inside the buttons or they would be cut off. */
+.tool-btn { height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 10px; flex-shrink: 0; white-space: nowrap; border: none; border-radius: 6px; background: transparent; color: #1b1b1f; cursor: pointer; }
+.tool-btn.primary { gap: 8px; padding: 0 14px 0 11px; background: #005fb8; color: #fff; font-weight: 600; }
+.view-btn { height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 10px; white-space: nowrap; border: none; border-radius: 5px; background: transparent; color: #1b1b1f; cursor: pointer; }
+.view-btn[aria-pressed="true"] { background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
+.tool-btn:focus-visible, .view-btn:focus-visible { outline-offset: -2px; }
+
+/* The items (explorer/Items.tsx): a tile or a row is an option of the list. Selected and focus are states, so they are here and not inline. Nothing in an
+   item is selectable text or an image of its own (a long press on a phone is for selecting, not for the browser's text selection or "save image"). */
+.item { cursor: default; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.item img { pointer-events: none; }
+.item[aria-selected="true"] { background: #cce4f7; box-shadow: inset 0 0 0 1px #99c9ef; }
+.item:focus-visible { outline-offset: -2px; }
+.col-head { display: flex; align-items: center; gap: 6px; padding: 0 8px; border: none; border-right: 1px solid #f0f1f4; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.col-head:focus-visible { outline-offset: -2px; }
+
+/* Their hover colours, for a pointer that can hover only: on a phone :hover sticks to what was tapped last. The item's hover ring comes after the selected
+   one and so wins over it, as in the design. */
+@media (hover: hover) {
+  .tool-btn:hover { background: #eef1f5; }
+  .tool-btn.primary:hover { background: #0a6ccc; }
+  .item:hover { box-shadow: inset 0 0 0 1px #c9d6e6; }
+  .col-head:hover { background: #f5f7fa; }
+}
+
 @media (max-width: 699px) {
   /* iOS Safari zooms the page into a field whose text is smaller than 16px; the design's inline `font: inherit` has to give way */
   input, textarea, select { font-size: 16px !important; }
@@ -63,4 +88,6 @@ input[type=range] { accent-color: #005fb8; }
   .bar-btn.sq { width: 36px; height: 36px; }
   .tree-row { height: 40px; }
   .tree-chev { width: 28px; height: 28px; }
+  .tool-btn { height: 36px; }
+  .view-btn { height: 34px; }
 }

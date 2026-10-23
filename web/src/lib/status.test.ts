@@ -16,6 +16,12 @@ test('the count: items, and photos and videos when there are files, as the desig
   assert.equal(statusCount([file('a.mp4', 'video', 1)]), '1 items  ·  0 photos, 1 videos');
 });
 
+test('a search narrows the items but not the photos and videos: those are the whole folder, as the design counts them', () => {
+  assert.equal(statusCount([entries[1]], entries), '1 items  ·  3 photos, 1 videos');
+  assert.equal(statusCount([], entries), '0 items  ·  3 photos, 1 videos');       // nothing matches, the folder still holds its files
+  assert.equal(statusCount([entries[0]], [entries[0]]), '1 items');               // a folder with no files has no second part
+});
+
 test('the selection: how many, and the size of the files among them', () => {
   assert.equal(statusSel(entries, []), '');
   assert.equal(statusSel(entries, ['a.jpg']), '1 selected  ·  1.8 MB');
