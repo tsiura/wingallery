@@ -25,9 +25,10 @@ const row = (id: string) => ta.db.prepare('select * from uploads where id = ?').
 const openUploads = () => (ta.db.prepare('select count(*) as n from uploads').get() as { n: number }).n;
 const exists = (rel: string) => stat(join(ta.media, rel)).then(() => true, () => false);
 const temps = async (rel: string) => (await readdir(join(ta.media, rel))).filter((n) => n.startsWith('.upload-'));
-const share = async (userId: number, alias: string, relPath: string, rights: string) => {
+const share = async (userId: number, alias: string, relPath: string, rights: string): Promise<number> => {
   const r = await admin.json('POST', `/api/admin/users/${userId}/shares`, { relPath, alias, create: rights.includes('c'), update: rights.includes('u'), delete: rights.includes('d') });
   assert.equal(r.status, 200);
+  return r.body.id;
 };
 
 // console.log from here on; the result gives the audit events (JSON lines) without their timestamp.
@@ -514,6 +515,76 @@ test('a folder that is read-only on disk is a 409, and leaves no row (Review Foc
   const before = openUploads();
   assert.deepEqual(await startAs(editor, { dir: '/Other/ro', name: 'x.jpg', size: 5 }), { status: 409, body: { error: 'This folder is read-only on disk' } });
   assert.equal(openUploads(), before);
+});
+
+// An upload of `c` with its first 100 bytes in, so that its temp file is there.
+const partial = async (c: Client, dir: string, name: string): Promise<string> => {
+  const r = await startAs(c, { dir, name, size: jpg.length });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(await (await put(c, r.body.id, 0, jpg.subarray(0, 100))).json(), { received: 100 });
+  return r.body.id;
+};
+// The rest of an upload that the administrator ended: refused as an upload that is not there, and in the folder `rel` there is nothing, neither its temp
+// file nor the file it would have become.
+const refusedRest = async (c: Client, id: string, rel: string, offset = 100) => {
+  const r = await put(c, id, offset, jpg.subarray(offset));
+  assert.deepEqual([r.status, await r.json()], [404, { error: 'Not found' }], id);
+  assert.equal(row(id), undefined, 'the row is gone');
+  assert.deepEqual(await readdir(join(ta.media, rel)), [], 'nothing in the folder');
+};
+const patchShare = (id: number, body: object) => admin.json('PATCH', `/api/admin/shares/${id}`, body);
+
+test('taking Create away from a share ends every upload its user had started: the next chunk is a 404, the temp file goes, no file lands (spec 4.2)', async () => {
+  await seedTree(ta.media, ['pics/rights/', 'pics/keep/', 'pics/look/']);
+  const sam = await ta.addUser('sam', 'member');
+  const [rights, keep, look] = [await share(sam.id, 'Rights', 'pics/rights', 'cud'), await share(sam.id, 'Keep', 'pics/keep', 'cud'), await share(sam.id, 'Look', 'pics/look', 'ud')];
+  const [a, b, theirs] = [await partial(sam.client, '/Rights', 'a.jpg'), await partial(sam.client, '/Keep', 'b.jpg'), await partial(editor, '/Fam', 'theirs.jpg')];
+  // changes that take no Create away end nothing: another right, another name, Create ticked again
+  assert.equal((await patchShare(keep, { alias: 'Keep2', update: false, create: true })).status, 200);
+  assert.equal((await patchShare(look, { delete: false })).status, 200);
+  assert.deepEqual(await (await put(sam.client, b, 100, jpg.subarray(100, 200))).json(), { received: 200 });
+  // Create unticked: all of sam's uploads end, also the one into the other share (an upload does not record the share it started under) ...
+  assert.equal((await patchShare(rights, { create: false })).body.create, false);
+  await refusedRest(sam.client, a, 'pics/rights');
+  await refusedRest(sam.client, b, 'pics/keep', 200);
+  // ... and nobody else's: the editor's upload carries on to its end
+  assert.deepEqual(await (await put(editor, theirs, 100, jpg.subarray(100))).json(), { done: true, name: 'theirs.jpg' });
+  // A share that has no Create to take away takes no upload with it, and sam can start again where he still may
+  const c = await partial(sam.client, '/Keep2', 'c.jpg');
+  assert.equal((await patchShare(rights, { delete: false })).status, 200);                  // Create stays off
+  assert.equal((await admin.json('DELETE', `/api/admin/shares/${look}`)).status, 200);      // a share without Create goes
+  assert.deepEqual(await (await put(sam.client, c, 100, jpg.subarray(100))).json(), { done: true, name: 'c.jpg' });
+  assert.equal((await startAs(sam.client, { dir: '/Rights', name: 'd.jpg', size: 5 })).status, 403);   // and what Create was taken from stays refused
+});
+
+test('removing a share that allowed Create ends every upload its user had started, in the same way', async () => {
+  await seedTree(ta.media, ['pics/rm-a/', 'pics/rm-b/']);
+  const lou = await ta.addUser('lou', 'member');
+  const a = await share(lou.id, 'A', 'pics/rm-a', 'cud');
+  await share(lou.id, 'B', 'pics/rm-b', 'c');
+  const [x, y] = [await partial(lou.client, '/A', 'x.jpg'), await partial(lou.client, '/B', 'y.jpg')];
+  assert.deepEqual(await admin.json('DELETE', `/api/admin/shares/${a}`), { status: 200, body: { ok: true } });
+  await refusedRest(lou.client, x, 'pics/rm-a');
+  await refusedRest(lou.client, y, 'pics/rm-b');
+});
+
+test('a temp file that cannot be removed does not fail the share change: the answer is 200, the upload is over, the file is logged with its path', { skip: process.getuid?.() === 0 }, async (t) => {
+  const events = capture(t);
+  await seedTree(ta.media, ['pics/stuck/']);
+  const kim = await ta.addUser('kim', 'member');
+  const stuck = await share(kim.id, 'Stuck', 'pics/stuck', 'c');
+  const id = await partial(kim.client, '/Stuck', 's.jpg');
+  const dir = join(ta.media, 'pics/stuck');
+  await chmod(dir, 0o555); t.after(() => chmod(dir, 0o755));            // a file in a folder that can't be written can't be unlinked, as on a read-only mount
+  const changed = await patchShare(stuck, { create: false });
+  assert.deepEqual([changed.status, changed.body.create], [200, false]);
+  assert.equal(row(id), undefined);                                      // the upload is over whatever happens to its file
+  assert.deepEqual(await temps('pics/stuck'), [`.upload-${id}`]);        // which stays, and which the owner is told about:
+  const all = events();
+  assert.equal(all.filter((e) => e.event === 'share_updated').length, 1);   // the audit line is written as ever
+  const errors = all.filter((e) => e.event === 'error').map((e) => String(e.message));
+  assert.equal(errors.length, 1, errors.join('\n'));
+  assert.ok(errors[0].includes(join(dir, `.upload-${id}`)) && errors[0].includes(`user ${kim.id}`), errors[0]);
 });
 
 test('only stale uploads are swept, whether or not their temp file is still there', async () => {

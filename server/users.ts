@@ -149,17 +149,32 @@ export function updateUser(db: DB, actor: Me, id: number, patch: UserPatch): Adm
   return { id, username, displayName, role };
 }
 
+// The temp files of uploads whose rows are already gone, every one even when another can't be removed. By then the access they were started under has
+// ended, so a temp file that stays (a read-only folder, a fault of the disk) is no failure of the change: the caller must still answer 200 and write its
+// audit line. Each file that stays is logged as an error, with its path, for the owner to remove by hand; `whose` says whose it was.
+async function removeTempFiles(paths: string[], whose: string): Promise<void> {
+  const removals = await Promise.allSettled(paths.map((path) => rm(path, { force: true })));
+  for (const done of removals) {
+    if (done.status === 'rejected') log('error', { message: `Could not remove an upload temp file of ${whose}: ${done.reason instanceof Error ? done.reason.message : String(done.reason)}` });
+  }
+}
+
 // Deleting the row takes the user's sessions, shares and upload records with it (ON DELETE CASCADE). The row goes first, so access ends
 // even when a temp file can't be removed; then the temp files of their unfinished uploads, which nothing else would ever clean up.
-// By then the user is gone, so a temp file that stays (a read-only folder, a fault of the disk) is no failure of the removal: the caller must
-// still answer 200 and write its audit line. Each file that stays is logged as an error, with its path, for the owner to remove by hand.
 export async function removeUser(db: DB, actor: Me, id: number): Promise<void> {
   requireStillAdmin(db, actor);
   if (id === actor.id) throw new HttpError(403, "You can't remove yourself");
   const temps = (db.prepare('select temp_abs from uploads where user_id = ?').all(id) as { temp_abs: string }[]).map((r) => r.temp_abs);
   if (db.prepare('delete from users where id = ?').run(id).changes === 0) throw new HttpError(404, 'Not found');
-  const removals = await Promise.allSettled(temps.map((path) => rm(path, { force: true })));
-  for (const done of removals) {
-    if (done.status === 'rejected') log('error', { message: `Could not remove an upload temp file of removed user ${id}: ${done.reason instanceof Error ? done.reason.message : String(done.reason)}` });
-  }
+  await removeTempFiles(temps, `removed user ${id}`);
+}
+
+// Ends every unfinished upload of a user. An upload checks its owner at each chunk, but the right to create only when it starts (uploads.ts), so uploads
+// started under a right that is taken away (a share loses Create, or goes) would go on landing files in its folder. The rows go first: the next chunk of each
+// is a 404, as for an upload that is not there, and the client reports the file as failed. Then the temp files, as above. An upload does not record the share it
+// started under, and two shares can reach one folder, so all of the user's uploads end, not only those into that share's folder.
+// ponytail: a start that passed its right check just before the change inserts its row just after this ran, and that upload survives; re-check the right at each chunk if that ever matters.
+export async function dropUserUploads(db: DB, userId: number, whose: string): Promise<void> {
+  const dropped = db.prepare('delete from uploads where user_id = ? returning temp_abs').all(userId) as { temp_abs: string }[];
+  await removeTempFiles(dropped.map((r) => r.temp_abs), whose);
 }

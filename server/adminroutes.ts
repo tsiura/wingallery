@@ -10,7 +10,7 @@ import { log } from './log.ts';
 import { addShare, browseDisk, getShare, listShareInfo, removeShare, updateShare } from './shares.ts';
 import type { ShareInput, SharePatch } from './shares.ts';
 import { emptyTrash, listTrash, purgeTrash, restoreTrash } from './trash.ts';
-import { createUser, getAdminUser, listUsers, removeUser, setPassword, updateUser } from './users.ts';
+import { createUser, dropUserUploads, getAdminUser, listUsers, removeUser, setPassword, updateUser } from './users.ts';
 import type { UserPatch } from './users.ts';
 import type { ShareRow } from './vpath.ts';
 
@@ -103,18 +103,22 @@ export function registerAdminRoutes(app: App): void {
     const admin = requireAdmin(ctx);
     const id = idParam(ctx);
     const body = await readObject(ctx, BODY_LIMIT);
+    const hadCreate = getShare(db, id)?.create === true;   // read in the same turn as updateShare stores its change, so nothing comes between
     const share = await updateShare(cfg, db, id, { alias: body.alias, create: body.create, update: body.update, delete: body.delete } as SharePatch);   // updateShare checks the types
     log('share_updated', { ...shareFields(share), by: admin.username, ip: ctx.ip });
+    // A change takes effect on the user's next request (spec 4.2), and an upload checks the right to create only when it starts: those started under it end now.
+    if (hadCreate && !share.create) await dropUserUploads(db, share.userId, `user ${share.userId} (share ${id} no longer allows Create)`);
     return share;
   });
 
-  router.add('DELETE', '/api/admin/shares/:id', (ctx) => {
+  router.add('DELETE', '/api/admin/shares/:id', async (ctx) => {
     const admin = requireAdmin(ctx);
     const id = idParam(ctx);
     const share = getShare(db, id);
     if (!share) throw notFound();
     removeShare(db, id);
     log('share_removed', { ...shareFields(share), by: admin.username, ip: ctx.ip });
+    if (share.create) await dropUserUploads(db, share.userId, `user ${share.userId} (share ${id} removed)`);   // a share without Create started no upload
     return { ok: true };
   });
 

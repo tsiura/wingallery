@@ -1,7 +1,7 @@
 // Chunked uploads. A file arrives in pieces (the client sends 8 MiB, the server takes up to CHUNK_MAX) because Traefik cuts a request that runs longer
 // than 60 s. The pieces go into a hidden `.upload-<id>` file in the target folder, so a partial file is never listed; the last piece gives it its name,
 // and never over a file that is there. Every disk path after the start comes from the uploads row, which this module wrote: never from the id in a
-// URL (R1), and temp_abs is only ever a path built here (R2), since removeUser removes whatever it holds.
+// URL (R1), and temp_abs is only ever a path built here (R2), since removeUser and dropUserUploads (users.ts) remove whatever it holds.
 // A chunk is held in memory until it is written, so the route refuses what it can without reading the body, and reads the rest a few at a time.
 
 import { randomBytes } from 'node:crypto';
