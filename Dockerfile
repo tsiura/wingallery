@@ -14,7 +14,7 @@ FROM base AS build
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-RUN npm run build && npm prune --omit=dev
+RUN npm run build && npm prune --omit=dev && rm -rf server/test
 
 FROM base AS runtime
 ENV NODE_ENV=production MEDIA_ROOT=/media DATA_DIR=/data PORT=8080
@@ -24,7 +24,7 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/shared ./shared
 COPY --from=build /app/web/dist ./web/dist
 COPY docker/gallery /usr/local/bin/gallery
-RUN chmod 755 /usr/local/bin/gallery && rm -rf server/test
+RUN chmod 755 /usr/local/bin/gallery
 USER node
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"

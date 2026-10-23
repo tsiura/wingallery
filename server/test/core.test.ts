@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import type { IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { loadConfig } from '../config.ts';
 import { openDb } from '../db.ts';
 import { HttpError, clientInfo, parseCookies, readBody, readForm, readJson } from '../http.ts';
@@ -170,4 +171,45 @@ test('pipeline gives handlers the client info; test client sends Origin on non-G
     { ip: '127.0.0.1', https: false, origin: ta.url, reqOrigin: ta.url, cookie: 'hg_session=abc', type: 'application/json' });
   const proxied = await ta.client().req('GET', '/api/seen', undefined, { 'x-forwarded-for': '203.0.113.9', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'gallery.example.com' });
   assert.deepEqual(await proxied.json(), { ip: '203.0.113.9', https: true, origin: 'https://gallery.example.com', reqOrigin: null, cookie: null, type: null });
+});
+test('close(): a request still running when the app is told to stop does not hold the shutdown for the 95 s keep-alive', { timeout: 20_000 }, async (t) => {
+  const ta = await startTestApp(); t.after(() => ta.close());
+  ta.app.server.keepAliveTimeout = 95_000;   // what main.ts sets, for Traefik
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((r) => { release = r; }), started = new Promise<void>((r) => { entered = r; });
+  ta.app.router.add('GET', '/api/slow', async () => { entered(); await gate; return { done: true }; });
+  const { port, host } = new URL(ta.url);
+  const open = (path: string) => {
+    const sock = connect(Number(port), '127.0.0.1', () => sock.write(`GET ${path} HTTP/1.1\r\nHost: ${host}\r\n\r\n`));
+    let got = '';
+    sock.setEncoding('utf8').on('data', (d: string) => { got += d; });
+    return { got: () => got, ended: new Promise<void>((resolve) => sock.on('close', () => resolve())) };
+  };
+
+  const idle = open('/healthz');   // answered (a chunked body, ending in 0 CRLF CRLF), then kept alive and idle: server.close() drops it at once
+  for (let i = 0; i < 300 && !idle.got().endsWith('\r\n0\r\n\r\n'); i++) await sleep(10);
+  assert.ok(idle.got().endsWith('\r\n0\r\n\r\n'), idle.got());
+  const busy = open('/api/slow');  // still being served when the app is told to stop
+  await started;
+  const closed = ta.app.close();
+  release();                       // its answer goes out, and the connection is idle from then on, with 95 s to live
+  const outcome = await Promise.race([closed.then(() => 'closed'), sleep(5000, 'still open 5 s later', { ref: false })]);
+  assert.equal(outcome, 'closed');
+  await Promise.all([idle.ended, busy.ended]);
+  assert.match(busy.got(), /^HTTP\/1\.1 200 [\s\S]*"done":true/);   // the request that was running got its answer
+});
+test('close(): a request that is still running 2 s after the stop is cut off, so the shutdown completes', { timeout: 20_000 }, async (t) => {
+  const ta = await startTestApp(); t.after(() => ta.close());
+  let entered!: () => void;
+  const started = new Promise<void>((r) => { entered = r; });
+  ta.app.router.add('GET', '/api/stuck', () => { entered(); return new Promise(() => {}); });   // never answers
+  const { port, host } = new URL(ta.url);
+  const sock = connect(Number(port), '127.0.0.1', () => sock.write(`GET /api/stuck HTTP/1.1\r\nHost: ${host}\r\n\r\n`));
+  const ended = new Promise<void>((resolve) => sock.on('close', () => resolve()));
+  await started;
+  const t0 = Date.now();
+  await ta.app.close();
+  const took = Date.now() - t0;
+  await ended;
+  assert.ok(took >= 1500 && took < 5000, `took ${took} ms`);   // given its 2 s, then cut: neither at once nor never
 });

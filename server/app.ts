@@ -89,7 +89,11 @@ export function createApp(cfg: Config, db: DB): App {
     setupToken: countUsers(db) === 0 ? randomBytes(24).toString('base64url') : null,
     close: () => closing ??= new Promise<void>((resolve) => {
       // stops accepting and drops idle keep-alive sockets; requests in flight finish first, and then the photo workers that are idle end too
-      server.close(() => { db.close(); void photoPool.stop().then(() => resolve()); });
+      server.close(() => { clearInterval(sweep); clearTimeout(grace); db.close(); void photoPool.stop().then(() => resolve()); });
+      // main.ts keeps an idle connection for 95 s, so one that was still serving a request when this ran would hold the shutdown long past
+      // Docker's 10 s before SIGKILL (which skips db.close()). Drop the connections that go idle meanwhile, and cut whatever still runs after 2 s.
+      const sweep = setInterval(() => server.closeIdleConnections(), 100);
+      const grace = setTimeout(() => server.closeAllConnections(), 2000);
     }),
   };
   registerAuthRoutes(app);

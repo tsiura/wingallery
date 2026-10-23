@@ -4,10 +4,15 @@ services:
     restart: unless-stopped      # the server stops on an error it can't explain instead of carrying on; this brings it back
     user: "1000:1000"            # CHANGE: output of `id -u`:`id -g` — must own ./data and be able to write shared folders
     environment:
-      TZ: Europe/Moscow          # CHANGE: your timezone (used for video/file dates)
+      TZ: Europe/Berlin          # CHANGE: your timezone (used for video/file dates)
     volumes:
       - ./data:/data
       - /home/user/pictures:/media/pictures      # CHANGE: one line per folder; add :ro if nobody gets Create/Update/Delete there
+    logging:                     # the audit log is this container log: 5 files of 10 MB are kept, and a recreated container starts a new one
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
     networks: [traefik]          # CHANGE: your Traefik network name (the same name in the 3 places marked so)
     labels:
       - traefik.enable=true
