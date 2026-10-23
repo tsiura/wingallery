@@ -7,6 +7,7 @@ import { registerAuthRoutes } from './authroutes.ts';
 import { registerBrowseRoutes } from './browseroutes.ts';
 import type { Config } from './config.ts';
 import type { DB } from './db.ts';
+import { registerFileRoutes } from './fileroutes.ts';
 import { HttpError, Router, clientInfo, parseCookies, securityHeaders, sendJson } from './http.ts';
 import type { Ctx } from './http.ts';
 import { log } from './log.ts';
@@ -90,6 +91,7 @@ export function createApp(cfg: Config, db: DB): App {
   registerAuthRoutes(app);
   registerAdminRoutes(app);
   registerBrowseRoutes(app);
+  registerFileRoutes(app);
   registerMediaRoutes(app);
   return app;
 }
