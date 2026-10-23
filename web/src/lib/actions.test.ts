@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Entry, Rights } from '../../../shared/types.ts';
-import { actionsFor, baseLength, deleteWords, downloadPlan, mostActions, scopeRootOf } from './actions.ts';
+import { actionsFor, baseLength, deleteWords, downloadPlan, mostActions, scopeRootOf, ZIP_LIMIT, zipEntries } from './actions.ts';
 
 const R = (c: boolean, u: boolean, d: boolean): Rights => ({ create: c, update: u, delete: d });
 const file = { kind: 'photo', name: 'a.jpg' } as Entry, prot = { kind: 'folder', name: 'Fam', protected: true } as Entry;
@@ -57,7 +57,7 @@ test('deleteWords: the count, the files the gallery does not show, and for a mem
 });
 
 const photo = (name: string) => ({ kind: 'photo', name, size: 1 }) as Entry;
-const folder = (name: string) => ({ kind: 'folder', name, protected: false }) as Entry;
+const folder = (name: string, count = 0) => ({ kind: 'folder', name, protected: false, count }) as Entry;   // `count`: the media files below it
 
 test('downloadPlan: one file as it is, anything else as a zip', () => {
   assert.deepEqual(downloadPlan('/Fam', [photo('a.jpg')], 5), { kind: 'file', path: '/Fam/a.jpg' });
@@ -83,4 +83,26 @@ test('downloadPlan: a selection too long for the 1 MB form is refused, unless it
   assert.ok(JSON.stringify(cyrillic.map((e) => `/Fam/${e.name}`)).length < 900_000);
   assert.deepEqual(downloadPlan('/Fam', cyrillic, 9999), { kind: 'too-many' });
   assert.equal(downloadPlan('/Fam', cyrillic.slice(0, 100), 9999).kind, 'zip');
+});
+
+test('zipEntries: a file is one entry, a folder is itself and the media files below it', () => {
+  assert.equal(zipEntries([]), 0);
+  assert.equal(zipEntries([photo('a.jpg'), photo('b.jpg')]), 2);
+  assert.equal(zipEntries([folder('Empty')]), 1);
+  assert.equal(zipEntries([photo('a.jpg'), folder('Sub', 12), folder('Other', 30)]), 1 + 13 + 31);
+});
+
+test('downloadPlan: a zip of more than 20000 files and folders is refused before the form is posted, because the server would refuse it and the page cannot read why', () => {
+  assert.equal(ZIP_LIMIT, 20_000);
+  assert.deepEqual(downloadPlan('/Fam', [folder('Big', 19_999)], 5), { kind: 'zip', paths: ['/Fam/Big'] });                  // the folder and 19999 files: exactly the limit
+  assert.deepEqual(downloadPlan('/Fam', [folder('Big', 20_000)], 5), { kind: 'too-many-files' });
+  assert.deepEqual(downloadPlan('/Fam', [folder('A', 10_000), folder('B', 9_998)], 5), { kind: 'zip', paths: ['/Fam/A', '/Fam/B'] });   // 10001 + 9999
+  assert.deepEqual(downloadPlan('/Fam', [folder('A', 10_000), folder('B', 9_999)], 5), { kind: 'too-many-files' });
+  assert.deepEqual(downloadPlan('/Fam', [photo('a.jpg'), photo('b.jpg'), folder('Big', 19_998)], 5), { kind: 'too-many-files' });
+  // select-all sends the folder itself, but what it holds counts just the same
+  assert.deepEqual(downloadPlan('/Fam', [photo('a.jpg'), folder('Big', 20_000)], 2), { kind: 'too-many-files' });
+  // a member's root lists the shares, and a share's count is every media file below it
+  assert.deepEqual(downloadPlan('/', [folder('Fam', 15_000), folder('Travel', 6_000)], 2), { kind: 'too-many-files' });
+  // one file is no zip
+  assert.deepEqual(downloadPlan('/Fam', [photo('a.jpg')], 30_000), { kind: 'file', path: '/Fam/a.jpg' });
 });

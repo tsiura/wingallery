@@ -54,13 +54,25 @@ export function deleteWords({ items, hiddenFiles }: DeletePreview, member: boole
 // The server reads the zip form with a 1 MB cap (about 10-17k paths); this stays under it.
 const ZIP_FORM_LIMIT = 900_000;
 
-export type DownloadPlan = { kind: 'file'; path: string } | { kind: 'zip'; paths: string[] } | { kind: 'too-many' };
+// The most files and folders one zip may take (server/zip.ts ZIP_LIMIT). The server refuses more with a 413, which the zip's hidden iframe can't show, so the
+// page counts first.
+export const ZIP_LIMIT = 20_000;
+
+// What a zip of these items would hold, as far as the listing knows: a file is one entry, a folder is itself and the media files below it (its `count`). The
+// server counts the folders below a folder as well, which the listing does not give, so this is never more than the server's count: a zip that this refuses,
+// the server would refuse too.
+export function zipEntries(picked: readonly Entry[]): number {
+  return picked.reduce((n, e) => n + (e.kind === 'folder' ? 1 + e.count : 1), 0);
+}
+
+export type DownloadPlan = { kind: 'file'; path: string } | { kind: 'zip'; paths: string[] } | { kind: 'too-many' } | { kind: 'too-many-files' };
 
 // One file is downloaded as it is, anything else as a zip. When everything in the folder (`folderSize` items) is selected, the folder itself is sent instead of
-// every item in it: a whole folder can have more items than the form can carry. Not at the root: a member's root is no folder on disk. A selection whose form,
-// as the browser encodes it, is too long is refused.
+// every item in it: a whole folder can have more items than the form can carry. Not at the root: a member's root is no folder on disk. A zip of more than
+// ZIP_LIMIT files and folders is refused, and so is a selection whose form, as the browser encodes it, is too long.
 export function downloadPlan(vpath: string, picked: Entry[], folderSize: number): DownloadPlan {
   if (picked.length === 1 && picked[0].kind !== 'folder') return { kind: 'file', path: joinV(vpath, picked[0].name) };
+  if (zipEntries(picked) > ZIP_LIMIT) return { kind: 'too-many-files' };
   const paths = picked.length > 1 && picked.length === folderSize && vpath !== '/' ? [vpath] : picked.map((e) => joinV(vpath, e.name));
   return new URLSearchParams({ paths: JSON.stringify(paths) }).toString().length > ZIP_FORM_LIMIT ? { kind: 'too-many' } : { kind: 'zip', paths };
 }

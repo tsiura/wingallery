@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode, RefObject } from 'react';
 import type { DeletePreview, Entry, Me } from '../../../shared/types.ts';
 import { api, downloadUrl, submitZip } from '../api.ts';
-import { deleteWords, downloadPlan } from '../lib/actions.ts';
+import { deleteWords, downloadPlan, ZIP_LIMIT } from '../lib/actions.ts';
 import type { ActionState } from '../lib/actions.ts';
 import { joinV } from '../lib/route.ts';
 import { Icon } from '../ui/Icon.tsx';
 import { ConfirmDialog, MoveDialog, PromptDialog } from './Dialogs.tsx';
 
 const TOO_MANY_SELECTED = 'Too many items selected — download the folder instead';
+const TOO_MANY_FILES = `Too many files for one download (limit ${ZIP_LIMIT})`;   // the server's own words (413), which a zip in a hidden iframe can't pass on
 
 // A line over the items about what could not be done, until it is dismissed or the user goes elsewhere.
 function Notice({ children, onDismiss }: { children: ReactNode; onDismiss(): void }) {
@@ -78,12 +79,13 @@ export function useFileActions({ role, vpath, at, picked, actions, folderSize, s
   }
 
   // One file is saved as it is; anything else is a zip. The zip's failure can only be told as "Download failed": the error page is the browser's, not ours (api.ts).
+  // So the limits the server would refuse it for are checked first (R4), and nothing is posted.
   function download(): void {
     setNotice(null);
     const plan = downloadPlan(vpath, picked, folderSize);
     if (plan.kind === 'file') saveFile(plan.path);
     else if (plan.kind === 'zip') submitZip(plan.paths, setNotice);
-    else setNotice(TOO_MANY_SELECTED);
+    else setNotice(plan.kind === 'too-many' ? TOO_MANY_SELECTED : TOO_MANY_FILES);
     focusPane();
   }
 
