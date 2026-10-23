@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Entry, Meta, SlideItem } from '../../../shared/types.ts';
+import type { PlayItem } from './slideshow.ts';
 import {
-  advance, CAPPED_NOTE, defaultScope, filterPool, joinPool, metaLine, poolSources, shuffled, SLIDE_CAP, slidesOf, step, swipeDelta, toggled,
+  advance, advancesAfterFilm, CAPPED_NOTE, defaultScope, filterPool, isPlaying, joinPool, metaLine, playAction, poolSources, refusedAutoplay, shuffled, SLIDE_CAP, slidesOf, step,
+  swipeDelta, toggled,
 } from './slideshow.ts';
 
 test('slideshow helpers', () => {
@@ -81,14 +83,30 @@ test('metaLine: when it was taken, and how big', () => {
   assert.equal(metaLine(meta(4032, null)), 'Mar 14, 2026  09:05');
 });
 
-const slide = (path: string, kind: SlideItem['kind'] = 'photo'): SlideItem => ({ path, kind, name: path.slice(path.lastIndexOf('/') + 1), mtime: 7 });
-const file = (name: string, kind: 'photo' | 'video' = 'photo') => ({ kind, name, size: 1, mtime: 7 }) as Entry;
+// What a folder's listing says about a file (FileEntry), and the meta that a slide made from it then carries: when it was taken and how big it is.
+const PHOTO = { takenAt: '2026-03-14T09:05:00', width: 4032, height: 3024, duration: null };
+const FILM = { takenAt: '2026-03-15T10:00:00', width: 1920, height: 1080, duration: 12.5 };
+const nameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+const slide = (path: string, kind: SlideItem['kind'] = 'photo'): PlayItem => ({ path, kind, name: nameOf(path), mtime: 7, meta: kind === 'photo' ? PHOTO : FILM });
+const walkedSlide = (path: string): SlideItem => ({ path, kind: 'photo', name: nameOf(path), mtime: 7 });   // what /api/files gives: no meta
+const file = (name: string, kind: 'photo' | 'video' = 'photo', extra: object = {}) => ({ kind, name, size: 1, mtime: 7, ...(kind === 'photo' ? PHOTO : FILM), type: 'x', ...extra }) as Entry;
 const dir = (name: string, extra: object = {}) => ({ kind: 'folder', name, mtime: 1, count: 3, cover: null, protected: false, ...extra }) as Entry;
 
 test('slidesOf: the files of a folder as the viewer plays them: folders left out, the order kept, each with its path', () => {
-  assert.deepEqual(slidesOf('/Fam', [dir('Sub'), file('b.jpg'), file('a.mp4', 'video')]), [slide('/Fam/b.jpg'), slide('/Fam/a.mp4', 'video')]);
+  assert.deepEqual(slidesOf('/Fam', [dir('Sub'), file('b.jpg'), file('a.mp4', 'video')]).map(({ path, kind, name }) => ({ path, kind, name })),
+    [{ path: '/Fam/b.jpg', kind: 'photo', name: 'b.jpg' }, { path: '/Fam/a.mp4', kind: 'video', name: 'a.mp4' }]);
   assert.deepEqual(slidesOf('/', [dir('Fam')]), []);
   assert.deepEqual(slidesOf('/Fam', []), []);
+});
+
+test('slidesOf: a slide made from the listing carries what the listing knows (when it was taken, how big), so that the viewer need not ask the server for it', () => {
+  assert.deepEqual(slidesOf('/Fam', [file('b.jpg'), file('a.mp4', 'video')]), [slide('/Fam/b.jpg'), slide('/Fam/a.mp4', 'video')]);
+  assert.deepEqual(slidesOf('/Fam', [file('b.jpg')])[0].meta, { takenAt: '2026-03-14T09:05:00', width: 4032, height: 3024, duration: null });
+  assert.deepEqual(slidesOf('/Fam', [file('a.mp4', 'video')])[0].meta, { takenAt: '2026-03-15T10:00:00', width: 1920, height: 1080, duration: 12.5 });
+  // a photo the server could not measure has no size, and still has its date (the file's time): that is known too, and nothing to ask for
+  const unmeasured = slidesOf('/Fam', [file('odd.jpg', 'photo', { width: null, height: null, takenAt: '2024-01-05T08:00:00' })])[0];
+  assert.deepEqual(unmeasured.meta, { takenAt: '2024-01-05T08:00:00', width: null, height: null, duration: null });
+  assert.equal(metaLine(unmeasured.meta!), 'Jan 5, 2024  08:00');
 });
 
 test('poolSources: the whole folder is its own files; with subfolders the folder is walked; selected is the selected files, then the selected folders walked', () => {
@@ -110,13 +128,15 @@ test('poolSources: the whole folder is its own files; with subfolders the folder
 });
 
 test('joinPool: what the folders walked gave, after the known files, under one cap that says so; null while a folder has not answered', () => {
-  const walked = { '/A': { items: [slide('/A/1.jpg'), slide('/A/2.jpg')], capped: false }, '/B': { items: [slide('/B/1.jpg')], capped: false } };
+  const walked = { '/A': { items: [walkedSlide('/A/1.jpg'), walkedSlide('/A/2.jpg')], capped: false }, '/B': { items: [walkedSlide('/B/1.jpg')], capped: false } };
   assert.deepEqual(joinPool({ own: [slide('/x.jpg')], walk: ['/A', '/B'], cap: true }, walked),
-    { items: [slide('/x.jpg'), slide('/A/1.jpg'), slide('/A/2.jpg'), slide('/B/1.jpg')], capped: false });
+    { items: [slide('/x.jpg'), walkedSlide('/A/1.jpg'), walkedSlide('/A/2.jpg'), walkedSlide('/B/1.jpg')], capped: false });
+  // the files the listing gave keep their meta; the ones /api/files gave have none, and are asked for when they are shown
+  assert.deepEqual(joinPool({ own: [slide('/x.jpg')], walk: ['/A', '/B'], cap: true }, walked)!.items.map((i) => i.meta !== undefined), [true, false, false, false]);
   assert.equal(joinPool({ own: [], walk: ['/A', '/C'], cap: true }, walked), null);
   assert.deepEqual(joinPool({ own: [slide('/x.jpg')], walk: [], cap: false }, {}), { items: [slide('/x.jpg')], capped: false });
 
-  const many = (dirName: string, n: number) => Array.from({ length: n }, (_, i) => slide(`/${dirName}/${i}.jpg`));
+  const many = (dirName: string, n: number) => Array.from({ length: n }, (_, i) => walkedSlide(`/${dirName}/${i}.jpg`));
   // a walk the server cut short says so
   assert.equal(joinPool({ own: [], walk: ['/A'], cap: true }, { '/A': { items: many('A', SLIDE_CAP), capped: true } })!.capped, true);
   // two folders that fit one cap each do not fit it together: the first 5000, in order, and the note
@@ -130,4 +150,43 @@ test('joinPool: what the folders walked gave, after the known files, under one c
   // the folder's own files are not a recursive list: all of them play
   assert.equal(joinPool({ own: many('s', SLIDE_CAP + 10), walk: [], cap: false }, {})!.items.length, SLIDE_CAP + 10);
   assert.equal(CAPPED_NOTE, 'Showing the first 5000 items.');
+});
+
+test('playAction: in the viewer a film\'s controls are its own, a photo\'s Play arms the advance, and in a slideshow the show and the film move together', () => {
+  // the viewer (a file opened): Space and the button pause and resume a film and leave the show alone, whatever the show's state
+  assert.deepEqual(playAction(true, true, false, true), { show: false, clip: 'pause' });     // the film plays by itself (autoplay), nothing was armed
+  assert.deepEqual(playAction(true, true, false, false), { show: false, clip: 'play' });
+  assert.deepEqual(playAction(true, true, true, true), { show: false, clip: 'pause' });      // the advance was armed on a photo before: still not touched
+  assert.deepEqual(playAction(true, true, true, false), { show: false, clip: 'play' });
+  // the viewer, on a photo (or on what can't be shown, which has no film to pause): it arms and disarms the advance
+  assert.deepEqual(playAction(true, false, false, false), { show: true, clip: null });
+  assert.deepEqual(playAction(true, false, true, false), { show: true, clip: null });
+  // a slideshow: the show and the film together, the film following what the show becomes
+  assert.deepEqual(playAction(false, true, true, true), { show: true, clip: 'pause' });      // playing: both pause
+  assert.deepEqual(playAction(false, true, false, false), { show: true, clip: 'play' });     // paused: both resume
+  assert.deepEqual(playAction(false, true, true, false), { show: true, clip: 'pause' });     // the film had been paused with its own control: the show pauses, the film stays so
+  assert.deepEqual(playAction(false, true, false, true), { show: true, clip: 'play' });
+  assert.deepEqual(playAction(false, false, true, false), { show: true, clip: null });       // a photo in a slideshow
+});
+
+test('isPlaying: what the button shows: in the viewer a film\'s own state, otherwise the show\'s', () => {
+  assert.equal(isPlaying(true, true, false, true), true);     // the viewer's film plays by itself: the button is Pause, though the show was never started
+  assert.equal(isPlaying(true, true, true, false), false);    // the advance is armed but the film is paused: the button is for the film
+  assert.equal(isPlaying(true, false, true, false), true);    // a photo in the viewer: the advance
+  assert.equal(isPlaying(true, false, false, true), false);
+  assert.equal(isPlaying(false, true, true, false), true);    // a slideshow: the show, whatever the film does
+  assert.equal(isPlaying(false, true, false, true), false);
+  assert.equal(isPlaying(false, false, true, false), true);
+});
+
+test('advancesAfterFilm: only a slideshow that is playing goes on when a film ends; a viewer never moves by itself after one', () => {
+  assert.deepEqual([advancesAfterFilm(false, true), advancesAfterFilm(false, false), advancesAfterFilm(true, true), advancesAfterFilm(true, false)], [true, false, false, false]);
+});
+
+test('refusedAutoplay: only the browser\'s refusal to play with sound is one; a play() that another pause() interrupted is not (that film must keep its sound)', () => {
+  assert.equal(refusedAutoplay(new DOMException('play() failed because the user didn\'t interact with the document first.', 'NotAllowedError')), true);
+  assert.equal(refusedAutoplay(new DOMException('The play() request was interrupted by a call to pause().', 'AbortError')), false);
+  assert.equal(refusedAutoplay(new DOMException('The element has no supported sources.', 'NotSupportedError')), false);
+  assert.equal(refusedAutoplay(new Error('boom')), false);
+  assert.deepEqual([refusedAutoplay(null), refusedAutoplay(undefined), refusedAutoplay('NotAllowedError')], [false, false, false]);
 });

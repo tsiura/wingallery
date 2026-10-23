@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { Entry, FileEntry, Listing, Me, SlideItem } from '../../../shared/types.ts';
+import type { Entry, FileEntry, Listing, Me } from '../../../shared/types.ts';
 import { api, q } from '../api.ts';
 import { CAPPED_NOTE, defaultScope, filterPool, joinPool, poolSources, shuffled, slidesOf } from '../lib/slideshow.ts';
-import type { Pool, ShowConfig } from '../lib/slideshow.ts';
+import type { PlayItem, Pool, ShowConfig } from '../lib/slideshow.ts';
 import { Player } from './Player.tsx';
 import { SlideshowModal } from './SlideshowModal.tsx';
 
 const DEFAULTS = { transition: 'fade', shuffle: false, loop: true, videos: true, subfolders: false, scope: 'folder' } as const;   // design line 530; the slide time is the user's preference
 
 // The window that asks how to play, or the stage with what it plays.
-type Phase = { kind: 'ask' } | { kind: 'play'; items: SlideItem[]; start: number; autoplay: boolean };
+type Phase = { kind: 'ask' } | { kind: 'play'; items: PlayItem[]; start: number; autoplay: boolean };
 
 // The viewer and the slideshow as the Explorer has them: the options window (Slideshow in the bar), the stage over the files of the folder (a file opened), and the
 // files in between. `sorted` are the folder's items in the order the pane shows them, whatever the search, `shown` the ones the search lets through, `picked` the

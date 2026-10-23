@@ -2,11 +2,11 @@
 // the buttons and the progress bar. A modal <dialog> like the others (G12), so the page behind is inert, the focus stays inside and Esc closes it.
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import type { CSSProperties, ReactNode, TouchEvent } from 'react';
-import type { Meta, SlideItem } from '../../../shared/types.ts';
+import type { CSSProperties, ReactNode, SyntheticEvent, TouchEvent } from 'react';
+import type { Meta } from '../../../shared/types.ts';
 import { api, q, saveFile, viewUrl } from '../api.ts';
-import { advance, metaLine, swipeDelta, toggled } from '../lib/slideshow.ts';
-import type { Run, ShowConfig } from '../lib/slideshow.ts';
+import { advance, advancesAfterFilm, isPlaying, metaLine, playAction, refusedAutoplay, swipeDelta, toggled } from '../lib/slideshow.ts';
+import type { PlayItem, Run, ShowConfig } from '../lib/slideshow.ts';
 import { Button, Dialog } from '../ui/controls.tsx';
 import { useNarrow } from '../ui/hooks.ts';
 import { Icon } from '../ui/Icon.tsx';
@@ -33,11 +33,15 @@ function Unshowable({ message, onDownload }: { message: string; onDownload(): vo
   );
 }
 
-// `items` are shown from `items[start]`; with `autoplay` the show goes on by itself (a photo after `cfg.seconds`, a film when it ends), otherwise it waits for Play.
-// The keys are ← → (step), Space (play or pause) and Esc (close); on a touch screen a swipe steps. A photo is a plain <img> from /media/view (a HEIC is served as a
-// JPEG there) and a film a <video controls>; the browser that cannot show one says so, and the Download button is in the bar always (F14.2).
-export function Player({ items, start, autoplay, cfg, onClose }: { items: SlideItem[]; start: number; autoplay: boolean; cfg: ShowConfig; onClose(): void }) {
+// `items` are shown from `items[start]`. With `autoplay` it is a slideshow: it goes on by itself (a photo after `cfg.seconds`, a film when it ends) and Play and Pause (the
+// button, Space) act on the show and on the film with it. Without, it is the viewer, for a file that was opened: nothing goes on by itself, but a film does play by itself
+// when it is shown, and has the button and Space to itself (the button shows whether it plays, and when it ends the viewer stays on it); on a photo Play arms the advance to
+// the next one and Pause disarms it. The keys are ← → (step), Space (play or pause) and Esc (close); on a touch screen a swipe steps. A photo is a plain <img> from /media/view
+// (a HEIC is served as a JPEG there) and a film a <video controls>; the browser that cannot show one says so, and the Download button is in the bar always (F14.2).
+// A slide that comes with its `meta` (when it was taken, how big) has no need to ask the server for it.
+export function Player({ items, start, autoplay, cfg, onClose }: { items: PlayItem[]; start: number; autoplay: boolean; cfg: ShowConfig; onClose(): void }) {
   const phone = useNarrow();
+  const viewer = !autoplay;
   const len = items.length;
   const [s, dispatch] = useReducer(
     (state: Run, a: Action) => (a.kind === 'toggle' ? toggled(state) : advance(state, a.delta, a.auto, len, cfg.loop)),
@@ -46,16 +50,20 @@ export function Player({ items, start, autoplay, cfg, onClose }: { items: SlideI
   const cur = items[s.idx];
   const film = cur.kind === 'video';
   const [failed, setFailed] = useState<string | null>(null);        // the path of the item that the browser could not show
-  const [meta, setMeta] = useState<{ path: string; value: Meta } | null>(null);
+  const [fetched, setFetched] = useState<Readonly<Record<string, Meta>>>({});   // what /api/meta said about the items that had no meta of their own, kept for a show that comes round again
   const [played, setPlayed] = useState({ lap: 0, fraction: 0 });     // how far the film of this lap has played
+  const [clipState, setClipState] = useState({ lap: 0, playing: false });   // whether the film of this lap plays, as its own events said last
   const [fullscreen, setFullscreen] = useState(() => document.fullscreenElement !== null);
-  const metas = useRef(new Map<string, Meta>());                      // what /api/meta said, so that a show that comes round again does not ask again
+  const asked = useRef(new Set<string>());                            // the paths that /api/meta has been asked about
   const clip = useRef<HTMLVideoElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const touch = useRef<number | null>(null);                          // where the finger that may be swiping went down
   const broken = failed === cur.path;
-  const timed = !film || broken;                                      // a film runs until it ends; a photo, or what could not be shown, for `cfg.seconds`
-  const filmBar = film && !broken && s.playing;
+  const live = film && !broken;                                       // a film is on stage, with controls of its own
+  const timed = !live;                                                // a film runs until it ends; a photo, or what could not be shown, for `cfg.seconds`
+  const playing = isPlaying(viewer, live, s.playing, clipState.lap === s.lap && clipState.playing);   // what the button shows
+  const filmBar = live && playing;
+  const known = cur.meta ?? fetched[cur.path];
 
   // A film that is taken out of the page goes on loading until the browser gets round to throwing it away, which for a long film is a good part of a phone's video
   // fetched for nothing. Taking its source away and loading again is what stops it, so the source is given and taken away here, as a pair (and not as a prop that
@@ -90,19 +98,24 @@ export function Player({ items, start, autoplay, cfg, onClose }: { items: SlideI
     if (next.kind === 'photo') new Image().src = viewUrl(next.path);
   }, [s.idx]);
 
+  // The line under the name: when it was taken and how big. A slide from the listing has it already; the others are asked for, once (also when the user steps back and
+  // forth before the answer is in, or a development build runs this effect twice), and the answer is kept by path. A request that failed may be made again.
   useEffect(() => {
-    const known = metas.current.get(path);
-    if (known) { setMeta({ path, value: known }); return; }
-    let wanted = true;
-    api<Meta>('GET', `/api/meta?path=${q(path)}`).then((value) => { metas.current.set(path, value); if (wanted) setMeta({ path, value }); }, () => {});   // no line is better than a wrong one
-    return () => { wanted = false; };
+    if (known || asked.current.has(path)) return;
+    asked.current.add(path);
+    api<Meta>('GET', `/api/meta?path=${q(path)}`).then(
+      (value) => setFetched((f) => ({ ...f, [path]: value })),
+      () => { asked.current.delete(path); },   // no line is better than a wrong one
+    );
   }, [path]);
 
-  // Play or Pause. A film is paused and resumed with the show, from the button and from the key.
+  // Play or Pause, from the button and from the key: on the show, on the film, or on both (`playAction` says which, in the viewer and in a slideshow).
   function togglePlay(): void {
-    dispatch({ kind: 'toggle' });
     const video = clip.current;
-    if (video) { if (s.playing) video.pause(); else video.play().catch(() => {}); }
+    const act = playAction(viewer, live, s.playing, video !== null && !video.paused);
+    if (act.show) dispatch({ kind: 'toggle' });
+    if (video && act.clip === 'play') video.play().catch(() => {});
+    else if (video && act.clip === 'pause') video.pause();
   }
 
   // Window level, because the focus can be anywhere in the window: on the stage, on a button, on the film. A film that has the focus keeps Space for itself.
@@ -118,7 +131,7 @@ export function Player({ items, start, autoplay, cfg, onClose }: { items: SlideI
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
-  }, [s.playing]);
+  }, [s.playing, live]);
 
   useEffect(() => {
     const changed = () => setFullscreen(document.fullscreenElement !== null);
@@ -153,24 +166,26 @@ export function Player({ items, start, autoplay, cfg, onClose }: { items: SlideI
   } else {
     // A phone's HEVC film in a browser that has no decoder for it can play its sound and show no picture, and then there is no error, only a picture of size 0.
     // A film that autoplay does not start (iOS, where a film that no finger started may not play with its sound) would hold a show up for good: it is asked to play,
-    // and if that is refused it plays without sound, which the controls can turn on.
+    // and if the browser refuses that it plays without sound, which the controls can turn on. Only that refusal: a film that was paused while it was loading has its
+    // play() rejected too (AbortError), and is to stay paused, with its sound.
+    const sync = (e: SyntheticEvent<HTMLVideoElement>) => setClipState({ lap: s.lap, playing: !e.currentTarget.paused });
     stage = broken
       ? <Unshowable message="This browser can't play this video" onDownload={() => saveFile(cur.path)} />
-      : <video ref={holdClip} controls autoPlay playsInline
-          onEnded={() => { if (s.playing) dispatch({ kind: 'step', delta: 1, auto: true }); }}
+      : <video ref={holdClip} controls autoPlay playsInline onPlay={sync} onPause={sync}
+          onEnded={(e) => { sync(e); if (advancesAfterFilm(viewer, s.playing)) dispatch({ kind: 'step', delta: 1, auto: true }); }}
           onError={() => setFailed(cur.path)}
           onLoadedMetadata={(e) => {
             const video = e.currentTarget;
             if (video.videoWidth === 0) setFailed(cur.path);
-            else video.play().catch(() => { video.muted = true; video.play().catch(() => {}); });
+            else video.play().catch((err) => { if (refusedAutoplay(err)) { video.muted = true; video.play().catch(() => {}); } });
           }}
           onTimeUpdate={(e) => setPlayed({ lap: s.lap, fraction: e.currentTarget.duration > 0 ? e.currentTarget.currentTime / e.currentTarget.duration : 0 })}
           style={{ maxWidth: '100%', maxHeight: '100%', background: '#000' }} />;
   }
 
-  // The bar: the film's progress while a film plays, the slide's time while a photo does, and where the item is among the others when the show is paused.
-  const width = filmBar ? `${(played.lap === s.lap ? played.fraction : 0) * 100}%` : s.playing ? undefined : `${((s.idx + 1) / len) * 100}%`;
-  const when = meta?.path === cur.path ? metaLine(meta.value).replace(' · ', '\u00a0· ') : '';   // a line that wraps on a phone breaks after the dot, not before it
+  // The bar: the film's progress while a film plays, the slide's time while a photo does, and where the item is among the others when nothing plays.
+  const width = filmBar ? `${(played.lap === s.lap ? played.fraction : 0) * 100}%` : playing ? undefined : `${((s.idx + 1) / len) * 100}%`;
+  const when = known ? metaLine(known).replace(' · ', '\u00a0· ') : '';   // a line that wraps on a phone breaks after the dot, not before it
 
   return (
     <Dialog label="Viewer" onClose={onClose} style={FULL}>
@@ -195,14 +210,14 @@ export function Player({ items, start, autoplay, cfg, onClose }: { items: SlideI
         </div>
         <div style={{ height: 72, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
           <button type="button" className="pl-round" title="Previous (←)" aria-label="Previous" onClick={() => dispatch({ kind: 'step', delta: -1, auto: false })}><Icon name="prev" /></button>
-          <button type="button" className="pl-round main" title="Play / Pause (Space)" aria-label={s.playing ? 'Pause' : 'Play'} onClick={togglePlay}><Icon name={s.playing ? 'pause' : 'play'} /></button>
+          <button type="button" className="pl-round main" title="Play / Pause (Space)" aria-label={playing ? 'Pause' : 'Play'} onClick={togglePlay}><Icon name={playing ? 'pause' : 'play'} /></button>
           <button type="button" className="pl-round" title="Next (→)" aria-label="Next" onClick={() => dispatch({ kind: 'step', delta: 1, auto: false })}><Icon name="next" /></button>
         </div>
         <div style={{ height: 3, flexShrink: 0, background: 'rgba(255,255,255,.1)' }}>
           <div key={s.run} aria-hidden="true"
             style={{
               height: '100%', background: '#4ca0ff', width, transition: filmBar ? 'width .25s linear' : undefined,
-              animation: s.playing && !filmBar ? `ssProg ${cfg.seconds}s linear forwards` : 'none',
+              animation: playing && !filmBar ? `ssProg ${cfg.seconds}s linear forwards` : 'none',
             }} />
         </div>
       </div>
