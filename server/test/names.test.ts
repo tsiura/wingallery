@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isHiddenName, validateName, validateAlias, sanitizeUploadName, splitExt, nextFreeName, restoredName, naturalCompare } from '../names.ts';
+import { isHiddenName, validateName, validateAlias, sanitizeUploadName, splitExt, nextFreeName, restoredName, naturalCompare, byName } from '../names.ts';
 import { checkMagic, mediaTypeOf } from '../mediatypes.ts';
 
 test('hidden names', () => {
@@ -54,6 +54,10 @@ test('name helpers', () => {
 });
 test('naturalCompare', () => {
   assert.deepEqual(['b10', 'b2', 'a'].sort(naturalCompare), ['a', 'b2', 'b10']);
+});
+test('byName: natural order, and names the collator ties go by code unit, so a sort never depends on the input order (G7)', () => {
+  const want = ['a', 'B', 'b', 'IMG1', 'img2', 'img10'];   // B and b tie in the collator: 'B' < 'b' as code units
+  for (const input of [want, [...want].reverse(), ['img10', 'b', 'IMG1', 'B', 'a', 'img2']]) assert.deepEqual([...input].sort(byName), want);
 });
 test('media types', () => {
   assert.deepEqual(mediaTypeOf('A.JPG'), { kind: 'photo', mime: 'image/jpeg', label: 'JPEG image' });

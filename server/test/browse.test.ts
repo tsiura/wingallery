@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync } from 'node:fs';
-import { chmod, copyFile, mkdir, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Me } from '../../shared/types.ts';
 import { pLimit } from '../limit.ts';
@@ -24,15 +24,17 @@ const get = (c: Client, route: string, path: string) => c.json('GET', `/api/${ro
 const addShare = (userId: number, alias: string, relPath: string, create = false) =>
   ta.db.prepare('insert into shares (user_id, alias, rel_path, can_create, can_update, can_delete) values (?, ?, ?, ?, 0, 0)').run(userId, alias, relPath, Number(create));
 
-// A HEIC shell with just the boxes exifr and image-size read: ispe says 64x64, as image-size misreads a cropped file; the Exif item says w x h.
-function heicWithExif(w: number, h: number, orientation: number): Buffer {
+// A HEIC shell with just the boxes exifr and image-size read: ispe says 64x64, as image-size misreads a cropped file; the Exif item says w x h
+// and 2021-06-15 12:34:56. `pad` bytes of stand-in picture data come before the Exif item in mdat, as when a writer stores the Exif after the image.
+function heicWithExif(w: number, h: number, orientation: number, pad = 0): Buffer {
   const u16 = (n: number) => { const b = Buffer.alloc(2); b.writeUInt16BE(n); return b; };
   const u32 = (...n: number[]) => { const b = Buffer.alloc(4 * n.length); n.forEach((v, i) => b.writeUInt32BE(v, 4 * i)); return b; };
   const box = (type: string, ...body: Buffer[]) => { const data = Buffer.concat(body); return Buffer.concat([u32(8 + data.length), Buffer.from(type, 'latin1'), data]); };
-  const tag = (id: number, type: number, value: number) => Buffer.concat([u16(id), u16(type), u32(1), type === 3 ? Buffer.concat([u16(value), u16(0)]) : u32(value)]);
+  const tag = (id: number, type: number, value: number, count = 1) => Buffer.concat([u16(id), u16(type), u32(count), type === 3 ? Buffer.concat([u16(value), u16(0)]) : u32(value)]);
   const tiff = Buffer.concat([Buffer.from('MM\0*', 'latin1'), u32(8),
-    u16(2), tag(0x0112, 3, orientation), tag(0x8769, 4, 38), u32(0),    // IFD0: Orientation, and the pointer to the Exif IFD that follows
-    u16(2), tag(0xa002, 4, w), tag(0xa003, 4, h), u32(0)]);             // Exif IFD: ExifImageWidth, ExifImageHeight
+    u16(2), tag(0x0112, 3, orientation), tag(0x8769, 4, 38), u32(0),                 // IFD0 at 8: Orientation, and the pointer to the Exif IFD that follows
+    u16(3), tag(0x9003, 2, 80, 20), tag(0xa002, 4, w), tag(0xa003, 4, h), u32(0),    // Exif IFD at 38: DateTimeOriginal (its 20 bytes lie at 80), ExifImageWidth, ExifImageHeight
+    Buffer.from('2021:06:15 12:34:56\0', 'latin1')]);
   const exif = Buffer.concat([u32(0), tiff]);                          // exif_tiff_header_offset 0: the TIFF header follows at once
   const infe = (id: number, kind: string) => box('infe', u32(0x02000000), u16(id), u16(0), Buffer.from(kind + '\0', 'latin1'));
   const ftyp = box('ftyp', Buffer.from('heic', 'latin1'), u32(0), Buffer.from('mif1heic', 'latin1'));
@@ -40,7 +42,8 @@ function heicWithExif(w: number, h: number, orientation: number): Buffer {
     box('iinf', u32(0), u16(2), infe(1, 'hvc1'), infe(2, 'Exif')),
     box('iloc', u32(0), Buffer.from([0x44, 0x00]), u16(1), u16(2), u16(0), u16(1), u32(at, exif.length)),
     box('iprp', box('ipco', box('ispe', u32(0, 64, 64)))));
-  return Buffer.concat([ftyp, meta(ftyp.length + meta(0).length + 8), box('mdat', exif)]);   // the Exif item sits in mdat, just past its 8-byte header
+  // the Exif item sits in mdat, past its 8-byte header and the padding
+  return Buffer.concat([ftyp, meta(ftyp.length + meta(0).length + 8 + pad), box('mdat', Buffer.alloc(pad, 0xab), exif)]);
 }
 
 before(async () => {
@@ -84,7 +87,10 @@ test('extractMeta: ffprobe output decides size, rotation, duration and date', as
     format: { duration: '2.500000', tags: { creation_time: '2025-07-11T10:00:00.000000Z' } } };
   assert.deepEqual(await extractMeta('/m/v.mov', 'video', 0, probe(iphone)),
     { width: 1080, height: 1920, takenAt: instantToWallClock(Date.UTC(2025, 6, 11, 10, 0, 0)), duration: 2.5 });
-  assert.deepEqual([calls[0][0], calls[0][1].at(-1), calls[0][2]], ['ffprobe', '/m/v.mov', 15_000]);
+  // the whole command is pinned: -protocol_whitelist file comes before the input, so a crafted file can't make ffprobe open a network URL or anything but a file
+  assert.deepEqual(calls[0], ['ffprobe', ['-v', 'error', '-print_format', 'json', '-select_streams', 'v:0',
+    '-show_entries', 'stream=width,height:stream_tags=rotate:stream_side_data=rotation:format=duration:format_tags=creation_time',
+    '-protocol_whitelist', 'file', '/m/v.mov'], 15_000]);
 
   const rotateTag = await extractMeta('/m/v.mp4', 'video', 7, probe({ streams: [{ width: 640, height: 360, tags: { rotate: '270' } }], format: {} }));
   assert.deepEqual(rotateTag, { width: 360, height: 640, takenAt: instantToWallClock(7), duration: null });
@@ -101,7 +107,7 @@ test('extractMeta: HEIC takes its size from EXIF, then swaps for Orientation 5-8
   const dir = await tempDir();
   await writeFile(join(dir, 'turned.heic'), heicWithExif(4000, 3000, 6));
   await writeFile(join(dir, 'level.HEIF'), heicWithExif(4000, 3000, 1));
-  assert.deepEqual(await extractMeta(join(dir, 'turned.heic'), 'photo', 0), { width: 3000, height: 4000, takenAt: instantToWallClock(0), duration: null });
+  assert.deepEqual(await extractMeta(join(dir, 'turned.heic'), 'photo', 0), { width: 3000, height: 4000, takenAt: '2021-06-15T12:34:56', duration: null });
   const level = await extractMeta(join(dir, 'level.HEIF'), 'photo', 0);
   assert.deepEqual([level.width, level.height], [4000, 3000]);
   // no EXIF in the file: image-size answers (its reading of our cropped sample is off, so the numbers aren't pinned)
@@ -109,16 +115,31 @@ test('extractMeta: HEIC takes its size from EXIF, then swaps for Orientation 5-8
   assert.ok(Number.isInteger(sample.width) && sample.width! > 0 && Number.isInteger(sample.height) && sample.height! > 0);
   assert.equal(sample.takenAt, instantToWallClock(0));
 });
+test('extractMeta: a photo longer than the first 512 KB is still read in full, a HEIC with its Exif item past that too (R1)', async () => {
+  // a writer may store the Exif item after the picture data, which in a full-size photo is megabytes into the file
+  const dir = await tempDir();
+  for (const pad of [600 * 1024, 3 * 1024 * 1024]) {
+    const file = join(dir, `exif-after-${pad}.heic`);
+    await writeFile(file, heicWithExif(4000, 3000, 6, pad));
+    assert.deepEqual(await extractMeta(file, 'photo', 0), { width: 3000, height: 4000, takenAt: '2021-06-15T12:34:56', duration: null }, `Exif item ${pad} bytes in`);
+  }
+  const long = join(dir, 'long.jpg');
+  await writeFile(long, Buffer.concat([await readFile(fixture('exif-rot6.jpg')), Buffer.alloc(600 * 1024)]));
+  assert.deepEqual(await extractMeta(long, 'photo', 0), { width: 48, height: 64, takenAt: '2025-12-24T18:00:00', duration: null });
+});
 
 test('extractMeta leaves no file open, whatever the file holds', { skip: !existsSync('/proc/self/fd') }, async () => {
   // exifr given a path leaves its handle open for a file under two bytes; Node then warns when it collects it (DEP0137)
   const dir = await tempDir();
   await writeFile(join(dir, 'empty.jpg'), '');
   await writeFile(join(dir, 'one.png'), 'x');
+  await writeFile(join(dir, 'big-garbage.jpg'), Buffer.alloc(600 * 1024, 0xab));   // longer than the head, so exifr is given the path
+  await writeFile(join(dir, 'big-photo.jpg'), Buffer.concat([await readFile(fixture('exif-rot6.jpg')), Buffer.alloc(600 * 1024)]));
   const openFiles = () => readdirSync('/proc/self/fd').length;
   const before = openFiles();
-  for (const f of [join(dir, 'empty.jpg'), join(dir, 'one.png'), join(dir, 'missing.jpg'), fixture('corrupt.jpg'), fixture('plain.png'), fixture('exif-rot6.jpg'), fixture('sample.heic')])
-    await extractMeta(f, 'photo', 0);
+  for (const f of [join(dir, 'empty.jpg'), join(dir, 'one.png'), join(dir, 'big-garbage.jpg'), join(dir, 'big-photo.jpg'), join(dir, 'missing.jpg'),
+    fixture('corrupt.jpg'), fixture('plain.png'), fixture('exif-rot6.jpg'), fixture('sample.heic')]) await extractMeta(f, 'photo', 0);
+  await new Promise((resolve) => setTimeout(resolve, 50));   // exifr doesn't wait for the close of a file it gave up on
   assert.ok(openFiles() <= before, `${openFiles() - before} file(s) left open`);
 });
 
@@ -210,6 +231,9 @@ test('meta: a media file answers, anything else is "Not a media file"', async ()
   for (const path of ['/', '/Family photos', '/Family photos/xmas', '/Family photos/notes.txt']) assert.deepEqual(await get(papa, 'meta', path), NOT_MEDIA, path);
   assert.deepEqual(await get(papa, 'meta', '/Family photos/missing.jpg'), NOT_FOUND);
   assert.deepEqual(await get(admin, 'meta', '/'), NOT_MEDIA);
+  // a hidden name anywhere in the path is refused before the disk is asked, though .DS_Store and @eaDir/c.jpg exist
+  for (const path of ['/Family photos/.DS_Store', '/Family photos/@eaDir', '/Family photos/@eaDir/c.jpg']) assert.deepEqual(await get(papa, 'meta', path), INVALID, path);
+  for (const path of ['/pics/family/.DS_Store', '/pics/family/@eaDir/c.jpg']) assert.deepEqual(await get(admin, 'meta', path), INVALID, path);
 });
 
 test('getMeta: a cached row is good while size and mtime match, and is replaced when either changes', async () => {

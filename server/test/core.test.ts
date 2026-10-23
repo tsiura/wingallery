@@ -41,6 +41,7 @@ test('openDb migrates once', async () => {
     assert.ok(db.prepare("select 1 from sqlite_master where type='table' and name=?").get(t), t);
   assert.throws(() => db.exec("insert into shares (user_id, alias, rel_path) values (999, 'a', 'b')"), /FOREIGN KEY constraint failed/);
   assert.equal((db.prepare('pragma journal_mode').get() as any).journal_mode, 'wal');
+  assert.equal((db.prepare('pragma synchronous').get() as any).synchronous, 1);   // NORMAL: with WAL a commit doesn't wait for a disk sync (FULL is 2)
   assert.equal((db.prepare('pragma busy_timeout').get() as any).timeout, 5000);
   db.close();
   assert.equal((openDb(f).prepare('pragma user_version').get() as any).user_version, 1);

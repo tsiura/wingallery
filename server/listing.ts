@@ -11,15 +11,13 @@ import { HttpError } from './http.ts';
 import { mediaTypeOf } from './mediatypes.ts';
 import type { MediaType } from './mediatypes.ts';
 import { getMeta } from './meta.ts';
-import { isHiddenName, naturalCompare } from './names.ts';
+import { byName, isHiddenName } from './names.ts';
 import { joinVpath, resolve, sharesForUser } from './vpath.ts';
 import type { Loc, ShareRow } from './vpath.ts';
 
 const ROOT_NAME = 'Home Gallery';
 const STATS_TTL_MS = 30_000;
 
-// Natural order, then plain code-unit order for names the collator can't tell apart (G7). The same comparator as byName in shares.ts.
-const byName = (a: string, b: string) => naturalCompare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
 const present = <T>(x: T | null): x is T => x !== null;
 const code = (err: unknown) => (err as NodeJS.ErrnoException).code;
 const isGone = (err: unknown) => code(err) === 'ENOENT' || code(err) === 'ENOTDIR';   // nothing there, or a file where a folder was expected

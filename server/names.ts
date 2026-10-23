@@ -6,6 +6,9 @@ const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' })
 
 export const naturalCompare = collator.compare;
 
+// What every list sorts by: natural order, then plain code-unit order for names the collator can't tell apart (G7), so the order is deterministic.
+export const byName = (a: string, b: string): number => naturalCompare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+
 // The name without its trailing dots and spaces. A loop, not /[. ]+$/: that regex is quadratic on a long run of them (see trimPad).
 function stripTail(name: string): string {
   let end = name.length;

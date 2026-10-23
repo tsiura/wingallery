@@ -33,10 +33,10 @@ export function instantToWallClock(ms: number): string {
 // translateValues:false keeps Orientation a number; reviveValues:false keeps DateTimeOriginal the raw string (R2).
 const EXIF = { pick: ['DateTimeOriginal', 'Orientation', 'ExifImageWidth', 'ExifImageHeight'], translateValues: false, reviveValues: false };
 
-const HEAD_BYTES = 512 * 1024;   // all that image-size's own file reader looks at, and more than exifr needs
+const HEAD_BYTES = 512 * 1024;   // all that image-size's own file reader looks at
 
-// The first bytes of a photo. exifr and image-size both parse these in memory, so the file is opened once and closed here. Handing exifr the
-// path instead leaves its file handle open when the file is shorter than two bytes, which Node reports when it collects it (DEP0137).
+// The first bytes of a photo, read in one open that is closed here. image-size parses them in memory, and so does exifr for a file that fits
+// in them: given the path of a file under two bytes, exifr leaves its file handle open, which Node reports when it collects it (DEP0137).
 async function readHead(abs: string): Promise<Buffer> {
   const file = await open(abs, 'r');
   try {
@@ -58,7 +58,9 @@ async function attempt<T>(read: () => T | Promise<T>): Promise<T | null> {
 
 async function photoMeta(abs: string, mtimeMs: number): Promise<Meta> {
   const head = await attempt(() => readHead(abs));
-  const exif = head ? await attempt(() => exifr.parse(head, EXIF)) : null;
+  // A longer file goes to exifr by path, which reads on as far as it needs: a HEIC may keep its Exif item anywhere in mdat, past the head.
+  // That file is over two bytes, so the leak above can't happen.
+  const exif = head ? await attempt(() => exifr.parse(head.length < HEAD_BYTES ? head : abs, EXIF)) : null;
   let width: number | null = null, height: number | null = null;
   // image-size misreads HEIC/HEIF that carry a 'clap' crop (our sample is 64x48 and comes out 63x64), so their EXIF size goes first (R1).
   if (mediaTypeOf(abs)?.convert) [width, height] = [positive(exif?.ExifImageWidth), positive(exif?.ExifImageHeight)];
@@ -73,8 +75,10 @@ async function photoMeta(abs: string, mtimeMs: number): Promise<Meta> {
 }
 
 // The first video stream and the container, as JSON. Rotation is a side-data entry, or on older files the `rotate` tag.
+// Members upload these files, so ffprobe may open the input and nothing else (-protocol_whitelist file): a crafted file can't make it reach a network URL.
 const PROBE = ['-v', 'error', '-print_format', 'json', '-select_streams', 'v:0',
-  '-show_entries', 'stream=width,height:stream_tags=rotate:stream_side_data=rotation:format=duration:format_tags=creation_time'];
+  '-show_entries', 'stream=width,height:stream_tags=rotate:stream_side_data=rotation:format=duration:format_tags=creation_time',
+  '-protocol_whitelist', 'file'];
 
 interface Probe {
   streams?: { width?: number; height?: number; tags?: { rotate?: string }; side_data_list?: { rotation?: number }[] }[];

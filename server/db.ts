@@ -25,7 +25,12 @@ export function openDb(file: string): DB {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA busy_timeout = 5000');
-  if (file !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
+  if (file !== ':memory:') {
+    db.exec('PRAGMA journal_mode = WAL');
+    // NORMAL is safe with WAL: a power cut can lose the last commits but not corrupt the file. FULL syncs the disk on every commit, and this
+    // connection is synchronous, so a cold folder (one metadata row per file) would stall every request for as many syncs as it has files.
+    db.exec('PRAGMA synchronous = NORMAL');
+  }
   const version = () => (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
   if (version() < MIGRATIONS.length) {
     db.exec('BEGIN IMMEDIATE');

@@ -7,7 +7,7 @@ import type { Me, ShareInfo } from '../shared/types.ts';
 import type { Config } from './config.ts';
 import type { DB } from './db.ts';
 import { HttpError, str } from './http.ts';
-import { isHiddenName, naturalCompare, validateAlias } from './names.ts';
+import { byName, isHiddenName, validateAlias } from './names.ts';
 import { resolve, sharesForUser } from './vpath.ts';
 import type { ShareRow } from './vpath.ts';
 
@@ -18,8 +18,6 @@ const PICK = 'Pick a folder inside the media folder';
 const notFound = () => new HttpError(404, 'Not found');
 const taken = (alias: string) => new HttpError(409, `This user already has a folder named "${alias}"`);
 const errcode = (err: unknown) => (err as { errcode?: number }).errcode;
-// Natural order, then plain code-unit order for names the collator can't tell apart (G7).
-const byName = (a: string, b: string) => naturalCompare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
 // A right that is absent stays as it is; one that is present counts only when it is exactly true (G6).
 const flag = (v: unknown, current: boolean) => (v === undefined ? current : v === true);
 
