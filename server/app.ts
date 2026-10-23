@@ -10,6 +10,7 @@ import type { DB } from './db.ts';
 import { HttpError, Router, clientInfo, parseCookies, securityHeaders, sendJson } from './http.ts';
 import type { Ctx } from './http.ts';
 import { log } from './log.ts';
+import { photoPool } from './meta.ts';
 import { countUsers } from './users.ts';
 
 // setupToken is the first-run link: set when the database has no users, cleared once the administrator exists.
@@ -79,8 +80,8 @@ export function createApp(cfg: Config, db: DB): App {
     cfg, db, router, limiter, server,
     setupToken: countUsers(db) === 0 ? randomBytes(24).toString('base64url') : null,
     close: () => closing ??= new Promise<void>((resolve) => {
-      // stops accepting and drops idle keep-alive sockets; requests in flight finish first
-      server.close(() => { db.close(); resolve(); });
+      // stops accepting and drops idle keep-alive sockets; requests in flight finish first, and then the photo workers that are idle end too
+      server.close(() => { db.close(); void photoPool.stop().then(() => resolve()); });
     }),
   };
   registerAuthRoutes(app);

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { Me } from '../../shared/types.ts';
 import { pLimit } from '../limit.ts';
 import { invalidateStats, listFiles } from '../listing.ts';
-import { exifToWallClock, extractMeta, getMeta, instantToWallClock } from '../meta.ts';
+import { PhotoPool, exifToWallClock, extractMeta, getMeta, instantToWallClock, photoPool } from '../meta.ts';
 import { runProcess } from '../proc.ts';
 import type { RunFn } from '../proc.ts';
 import { getMe } from '../users.ts';
@@ -54,16 +54,34 @@ function pngDeclaring(declared: number): Buffer {
     u32(declared), Buffer.from('eXIf', 'latin1')]);
 }
 
-// How far above where it started the process's arrayBuffers memory climbs while `run` goes on, looked at on every turn of the event loop.
-async function peakArrayBuffers(run: () => Promise<unknown>): Promise<number> {
-  const start = process.memoryUsage().arrayBuffers;
+// A valid ftyp heic box, then a box of length 0. exifr's walk over the boxes adds that length to its offset, so it never moves on and never yields
+// to the event loop. 60 bytes.
+const FROZEN_HEIC = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypheic', 'latin1'), Buffer.alloc(4), Buffer.from('mif1heic', 'latin1'),
+  Buffer.alloc(4), Buffer.from('free', 'latin1'), Buffer.alloc(28)]);
+
+// How far above where it started the process's resident memory climbs while `run` goes on, looked at on every turn of the event loop. Photos are
+// parsed in worker threads, whose ArrayBuffers this thread's process.memoryUsage().arrayBuffers doesn't count; the resident set is the process's.
+async function peakRss(run: () => Promise<unknown>): Promise<number> {
+  const start = process.memoryUsage.rss();
   let peak = start, going = true;
   const watch = (async () => {
-    while (going) { peak = Math.max(peak, process.memoryUsage().arrayBuffers); await new Promise((resolve) => setImmediate(resolve)); }
+    while (going) { peak = Math.max(peak, process.memoryUsage.rss()); await new Promise((resolve) => setImmediate(resolve)); }
   })();
   try { await run(); } finally { going = false; await watch; }
   return peak - start;
 }
+
+// Worker code from a data: URL, for the pool tests. What the worker does depends on the path it is sent; 'hang' never answers, in a loop that
+// never yields, like the frozen parser.
+const workerFrom = (code: string) => new URL('data:text/javascript,' + encodeURIComponent(code));
+const FAKE_WORKER = workerFrom(`
+  import { parentPort, threadId } from 'node:worker_threads';
+  parentPort.on('message', ({ abs }) => {
+    if (abs === 'throw') throw new Error('boom');
+    if (abs === 'exit') process.exit(3);
+    if (abs === 'hang') for (;;) {}
+    setTimeout(() => parentPort.postMessage({ width: threadId, height: null, exifDate: null }), 20);
+  });`);
 
 before(async () => {
   ta = await startTestApp();
@@ -146,7 +164,7 @@ test('extractMeta: a photo longer than the first 512 KB is still read in full, a
   await writeFile(long, Buffer.concat([await readFile(fixture('exif-rot6.jpg')), Buffer.alloc(600 * 1024)]));
   assert.deepEqual(await extractMeta(long, 'photo', 0), { width: 48, height: 64, takenAt: '2025-12-24T18:00:00', duration: null });
 });
-test('extractMeta: a crafted photo over the size cap can not make exifr read the whole file', async () => {
+test('extractMeta: a crafted photo over the size cap can not make exifr read the whole file', { timeout: 30_000 }, async () => {
   // exifr reads as many bytes as the file says its Exif data has, clamped only to the file's size; members can upload such a file
   const MB = 1024 * 1024;
   const dir = await tempDir();
@@ -154,10 +172,21 @@ test('extractMeta: a crafted photo over the size cap can not make exifr read the
   await writeFile(heic, heicWithExif(4000, 3000, 6, 0, 100 * MB));
   await writeFile(png, pngDeclaring(100 * MB));
   for (const f of [heic, png]) await truncate(f, 128 * MB);   // sparse: the 128 MB are never written
+  await extractMeta(fixture('plain.png'), 'photo', 0);        // a worker is up, so its start-up isn't counted
   for (const f of [heic, png]) {
-    const grown = await peakArrayBuffers(() => extractMeta(f, 'photo', 0));
-    assert.ok(grown < 8 * MB, `${f}: arrayBuffers memory grew by ${(grown / MB).toFixed(1)} MB`);
+    const grown = await peakRss(() => extractMeta(f, 'photo', 0));
+    assert.ok(grown < 24 * MB, `${f}: resident memory grew by ${(grown / MB).toFixed(1)} MB`);
   }
+});
+test('extractMeta: only a HEIC is handed to exifr by path; a crafted PNG under the cap is parsed from its head', { timeout: 30_000 }, async () => {
+  // a PNG keeps its Exif near the start, so it never needs the file read on: its declared 14 MB must not be read
+  const MB = 1024 * 1024;
+  const png = join(await tempDir(), 'under-cap.png');
+  await writeFile(png, pngDeclaring(14 * MB));
+  await truncate(png, 15 * MB);
+  await extractMeta(fixture('plain.png'), 'photo', 0);
+  const grown = await peakRss(() => extractMeta(png, 'photo', 0));
+  assert.ok(grown < 10 * MB, `resident memory grew by ${(grown / MB).toFixed(1)} MB`);
 });
 
 test('extractMeta leaves no file open, whatever the file holds', { skip: !existsSync('/proc/self/fd') }, async () => {
@@ -165,14 +194,98 @@ test('extractMeta leaves no file open, whatever the file holds', { skip: !exists
   const dir = await tempDir();
   await writeFile(join(dir, 'empty.jpg'), '');
   await writeFile(join(dir, 'one.png'), 'x');
-  await writeFile(join(dir, 'big-garbage.jpg'), Buffer.alloc(600 * 1024, 0xab));   // longer than the head, so exifr is given the path
+  await writeFile(join(dir, 'big-garbage.heic'), Buffer.alloc(600 * 1024, 0xab));            // a HEIC longer than the head, so exifr is given the path
+  await writeFile(join(dir, 'big-photo.heic'), heicWithExif(4000, 3000, 6, 600 * 1024));
   await writeFile(join(dir, 'big-photo.jpg'), Buffer.concat([await readFile(fixture('exif-rot6.jpg')), Buffer.alloc(600 * 1024)]));
+  await extractMeta(fixture('plain.png'), 'photo', 0);   // a worker is up: the descriptors of the thread itself aren't a leak
   const openFiles = () => readdirSync('/proc/self/fd').length;
   const before = openFiles();
-  for (const f of [join(dir, 'empty.jpg'), join(dir, 'one.png'), join(dir, 'big-garbage.jpg'), join(dir, 'big-photo.jpg'), join(dir, 'missing.jpg'),
+  for (const f of [join(dir, 'empty.jpg'), join(dir, 'one.png'), join(dir, 'big-garbage.heic'), join(dir, 'big-photo.heic'), join(dir, 'big-photo.jpg'), join(dir, 'missing.jpg'),
     fixture('corrupt.jpg'), fixture('plain.png'), fixture('exif-rot6.jpg'), fixture('sample.heic')]) await extractMeta(f, 'photo', 0);
   await new Promise((resolve) => setTimeout(resolve, 50));   // exifr doesn't wait for the close of a file it gave up on
   assert.ok(openFiles() <= before, `${openFiles() - before} file(s) left open`);
+});
+
+test('a photo that freezes the parser is given up on at the timeout; the loop stays free and the next photo works', { timeout: 30_000 }, async (t) => {
+  const was = photoPool.timeoutMs;
+  photoPool.timeoutMs = 300; t.after(() => { photoPool.timeoutMs = was; });
+  const lines: any[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(JSON.parse(line)); });   // the pool logs that it gave up
+  const frozen = join(await tempDir(), 'frozen.heic');
+  await writeFile(frozen, FROZEN_HEIC);
+  const mtime = Date.UTC(2024, 0, 2, 3, 4, 5);
+
+  let settled = false;
+  const started = performance.now();
+  const job = extractMeta(frozen, 'photo', mtime).finally(() => { settled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));   // a timer on this thread, while the parser spins in its own
+  assert.ok(!settled && performance.now() - started < 200, `the 10 ms timer fired after ${Math.round(performance.now() - started)} ms`);
+  assert.deepEqual(await job, { width: null, height: null, takenAt: instantToWallClock(mtime), duration: null });
+  assert.ok(performance.now() - started >= 250, 'it was the timeout that ended the job');
+
+  // the thread was replaced: a normal photo right after it gets its metadata
+  assert.deepEqual(await extractMeta(fixture('exif-rot6.jpg'), 'photo', 0), { width: 48, height: 64, takenAt: '2025-12-24T18:00:00', duration: null });
+  assert.deepEqual(lines.map((l) => [l.event, l.message, l.rel]), [['error', 'Photo metadata timed out', frozen]]);
+});
+test('a given-up photo is stored like any parse failure: listing its folder again does not freeze again', { timeout: 30_000 }, async (t) => {
+  const was = photoPool.timeoutMs;
+  photoPool.timeoutMs = 300; t.after(() => { photoPool.timeoutMs = was; });
+  const lines: any[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(JSON.parse(line)); });
+  await mkdir(join(ta.media, 'pics/frozen'), { recursive: true });
+  await writeFile(join(ta.media, 'pics/frozen/frozen.heic'), FROZEN_HEIC);
+  const list = () => get(admin, 'list', '/pics/frozen');
+
+  const started = performance.now();
+  const first = await list();
+  assert.ok(performance.now() - started >= 250, 'the first listing waited for the timeout');
+  const entry = first.body.entries[0];
+  assert.deepEqual([entry.name, entry.width, entry.height, entry.duration, entry.takenAt], ['frozen.heic', null, null, null, instantToWallClock(entry.mtime)]);
+  const row = ta.db.prepare('select width, height, taken_at from media_meta where rel_path = ?').get('pics/frozen/frozen.heic') as any;
+  assert.deepEqual([row.width, row.height, row.taken_at], [null, null, entry.takenAt]);
+
+  const again = performance.now();
+  assert.deepEqual((await list()).body, first.body);
+  assert.ok(performance.now() - again < 150, 'the second listing came from the cache');
+  assert.deepEqual(lines.map((l) => [l.event, l.message, l.rel]), [['error', 'Photo metadata timed out', 'pics/frozen/frozen.heic']]);
+});
+
+test('PhotoPool: a worker that throws, exits or hangs fails only its job and is replaced', { timeout: 20_000 }, async (t) => {
+  const lines: any[] = [];
+  t.mock.method(console, 'log', (line: string) => { lines.push(JSON.parse(line)); });
+  const pool = new PhotoPool(FAKE_WORKER, 1, 300);
+  t.after(() => pool.stop());
+  const first = await pool.run('ok', 'first');
+  assert.ok(first && first.width! > 0);
+  assert.equal(await pool.run('throw', 'thrower'), null);    // the worker's error event
+  assert.equal(await pool.run('exit', 'quitter'), null);     // its exit event, with a job in flight
+  assert.equal(await pool.run('hang', 'sleeper'), null);     // the timeout
+  const last = await pool.run('ok', 'last');
+  assert.ok(last && last.width !== first.width, 'answered by a new thread');
+  assert.equal(pool.live, 1);
+  assert.deepEqual(lines.map((l) => [l.message, l.rel]),
+    [['Photo metadata crashed', 'thrower'], ['Photo metadata crashed', 'quitter'], ['Photo metadata timed out', 'sleeper']]);
+});
+test('PhotoPool: no more workers than its size, the rest queued; stop() ends the idle workers and never fails a job', { timeout: 20_000 }, async (t) => {
+  const pool = new PhotoPool(FAKE_WORKER, 2, 5000);
+  t.after(() => pool.stop());
+  const done = await Promise.all(Array.from({ length: 8 }, (_, i) => pool.run('ok', 'job' + i)));
+  assert.ok(done.every((r) => r !== null));
+  assert.ok(new Set(done.map((r) => r!.width)).size <= 2, 'eight jobs on at most two threads');
+  assert.equal(pool.live, 2);
+  const inFlight = pool.run('ok', 'in flight');
+  await pool.stop();                    // the idle worker goes; the busy one finishes its job first
+  assert.ok(await inFlight);
+  assert.equal(pool.live, 1);
+  await pool.stop();
+  assert.equal(pool.live, 0);
+  assert.ok(await pool.run('ok', 'after stop'), 'a later job starts a new worker');
+});
+test('closing an app ends the idle photo workers', async () => {
+  await extractMeta(fixture('plain.png'), 'photo', 0);   // a worker is up
+  assert.ok(photoPool.live > 0);
+  await (await startTestApp()).close();
+  assert.equal(photoPool.live, 0);
 });
 
 test('pLimit runs at most n at once, keeps every result and frees the slot of a failure', { timeout: 10_000 }, async () => {
