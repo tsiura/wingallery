@@ -23,6 +23,13 @@ export async function tempDir(): Promise<string> {
   return dir;
 }
 
+// Waits, polling every 10 ms, until `done` holds or `ms` have passed. For a state that comes a few ticks after the event a test waited for: a fixed
+// sleep guesses how many and fails on a loaded machine. It does not say which of the two ended it; the test asserts the state itself afterwards.
+export async function waitUntil(done: () => boolean, ms = 2000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!done() && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
 // True when `cmd` can be started from PATH, so a test of an external tool (libvips, ffmpeg) can skip itself.
 export function hasCommand(cmd: string): boolean {
   return spawnSync(cmd, ['-version'], { stdio: 'ignore' }).error === undefined;

@@ -25,6 +25,18 @@ export function registerAuthRoutes(app: App): void {
     if (!c.ok) throw new HttpError(429, `Too many attempts, try again in ${c.retryAfterMin} minutes`);
   }
 
+  // The password check is the slow part, and a failure is recorded only after it: a burst of parallel attempts would all pass checkLimit before the first of
+  // them failed, and every one would cost a hash. So until the check ends, the attempt counts against the limits as a failure not yet recorded (begin, end).
+  // It ends before the second checkLimit, which then counts the others and not this one.
+  async function counted<T>(ctx: Ctx, username: string, work: () => Promise<T>): Promise<T> {
+    limiter.begin(ctx.ip, username);
+    try {
+      return await work();
+    } finally {
+      limiter.end(ctx.ip, username);
+    }
+  }
+
   function startSession(ctx: Ctx, userId: number, remember: boolean): void {
     const agent = (ctx.req.headers['user-agent'] ?? '').slice(0, 200);   // kept for the audit only, and a header can be as big as Node allows
     ctx.res.setHeader('Set-Cookie', sessionCookie(createSession(db, userId, remember, ctx.ip, agent), remember, cfg.cookieSecure));
@@ -37,10 +49,12 @@ export function registerAuthRoutes(app: App): void {
     const username = str(body.username), password = str(body.password);   // this very text goes to findLogin and to the limiter
     checkLimit(ctx, username);
     const found = findLogin(db, username);
-    let right = false;
-    if (found) right = await verifyPassword(password, found.passwordHash);
-    else await burnPasswordCheck(password);   // an unknown name costs as much time as a wrong password
-    checkLimit(ctx, username);                // guesses made while this one was hashing may have locked the name; a right password doesn't get past that
+    const right = await counted(ctx, username, async () => {
+      if (found) return verifyPassword(password, found.passwordHash);
+      await burnPasswordCheck(password);   // an unknown name costs as much time as a wrong password
+      return false;
+    });
+    checkLimit(ctx, username);             // guesses made while this one was hashing may have locked the name; a right password doesn't get past that
     // A reset ends every session. If the password was reset while this hash ran, the old one it just matched must not start a session that outlives the reset.
     // ponytail: that is settled inside this process; the CLI is another one and could still land between this read and the insert in startSession (microseconds); make the insert conditional on the hash if that ever shows.
     const current = right && found ? findLogin(db, username) : null;
@@ -84,7 +98,7 @@ export function registerAuthRoutes(app: App): void {
     // so it counts against the same lock as the login, and a right one clears the count as a login does.
     checkLimit(ctx, me.username);
     const row = findLogin(db, me.username);
-    const right = row !== null && await verifyPassword(str(body.current), row.passwordHash);
+    const right = row !== null && await counted(ctx, me.username, () => verifyPassword(str(body.current), row.passwordHash));
     checkLimit(ctx, me.username);
     if (!right) {
       limiter.fail(ctx.ip, me.username);

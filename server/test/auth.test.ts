@@ -240,6 +240,36 @@ test('login limiter: the answer is the longer of the username wait and the addre
   assert.deepEqual(l.check('9.9.9.9', 'bob', t), { ok: false, retryAfterMin: 15 });   // both apply: the address wait is the longer
   assert.deepEqual(l.check('8.8.8.8', 'amy', t), { ok: false, retryAfterMin: 15 });   // both apply: the username wait is the longer
 });
+test('login limiter: attempts still being checked count like failures, for the username and for the address, until they end', () => {
+  const l = new LoginLimiter(), t = 1e12;
+  for (let i = 0; i < 4; i++) l.begin('1.1.1.1', 'bob');
+  assert.deepEqual(l.check('2.2.2.2', 'bob', t), { ok: true });                        // four under way: a fifth may start
+  l.begin('2.2.2.2', 'BOB');                                                            // the same name in other letters
+  assert.deepEqual(l.check('3.3.3.3', 'bob', t), { ok: false, retryAfterMin: 15 });    // five under way lock the name, as five failures do
+  assert.deepEqual(l.check('3.3.3.3', 'amy', t), { ok: true });                         // that name only
+  l.end('2.2.2.2', 'BOB');                                                              // one ended in a success: there is no failure to count
+  assert.deepEqual(l.check('3.3.3.3', 'bob', t), { ok: true });
+  for (let i = 0; i < 4; i++) {                                                         // the others end in failures, which are recorded as they end:
+    l.end('1.1.1.1', 'bob');
+    l.fail('1.1.1.1', 'bob', t);
+    assert.deepEqual(l.check('3.3.3.3', 'bob', t), { ok: true }, String(i));            // pending and recorded still add up to four
+  }
+  l.fail('1.1.1.1', 'bob', t);
+  assert.deepEqual(l.check('3.3.3.3', 'bob', t), { ok: false, retryAfterMin: 15 });    // and a fifth failure locks, as ever
+
+  for (let i = 0; i < 15; i++) l.fail('9.9.9.9', 'u' + i, t - 10 * M);                  // the address: fifteen recorded failures, 10 minutes old ...
+  for (let i = 0; i < 4; i++) l.begin('9.9.9.9', 'v' + i);                              // ... and four under way
+  assert.deepEqual(l.check('9.9.9.9', 'x', t), { ok: true });
+  l.begin('9.9.9.9', 'v4');
+  assert.deepEqual(l.check('9.9.9.9', 'x', t), { ok: false, retryAfterMin: 5 });       // twenty: free when the oldest recorded failure leaves the window
+  assert.deepEqual(l.check('8.8.8.8', 'x', t), { ok: true });
+  for (let i = 0; i < 20; i++) l.begin('8.8.8.8', 'w' + i);                             // twenty under way and none recorded: a whole window is the worst case
+  assert.deepEqual(l.check('8.8.8.8', 'x', t), { ok: false, retryAfterMin: 15 });
+  for (let i = 0; i < 20; i++) l.end('8.8.8.8', 'w' + i);
+  assert.deepEqual(l.check('8.8.8.8', 'x', t), { ok: true });                           // they all succeeded, or were refused: nothing stays counted
+  for (let i = 0; i < 5; i++) l.end('9.9.9.9', 'v' + i);
+  assert.deepEqual([(l as any).pendingUsers.size, (l as any).pendingIps.size], [0, 0]); // and nothing is left in the maps
+});
 test('login limiter forgets idle entries, so made-up names and addresses cannot grow it forever', () => {
   const l = new LoginLimiter(), t = 1e12;
   for (let i = 0; i < 1000; i++) l.fail('7.7.' + (i >> 8) + '.' + (i & 255), 'name' + i, t);

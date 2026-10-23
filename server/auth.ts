@@ -97,25 +97,48 @@ const IDLE = DAY;             // a name's count has to outlive its lock, so it i
 // Account names are at most 32 characters, so a longer one can't match an account; cutting it keeps a huge made-up name from becoming a huge key.
 const key = (username: string) => str(username).slice(0, 64).toLowerCase();
 const blocked = (ms: number): { ok: false; retryAfterMin: number } => ({ ok: false, retryAfterMin: Math.ceil(ms / MINUTE) });
+const bump = (counts: Map<string, number>, k: string, by: number) => {
+  const n = (counts.get(k) ?? 0) + by;
+  if (n > 0) counts.set(k, n); else counts.delete(k);
+};
 
 // ponytail: keyed per address, so one IPv6 /64 can rotate through its addresses; key on the /64 if that ever shows up in the audit log.
 // ponytail: a name is remembered for a day, so a flood of made-up names from many addresses holds memory that long (about 100 bytes each); cap the map if it ever matters.
 export class LoginLimiter {
   private users = new Map<string, { fails: number; last: number }>();   // failures per username, until a success or a day without any
   private ips = new Map<string, number[]>();                            // the newest failure times per IP
+  private pendingUsers = new Map<string, number>();                    // password checks under way (begin .. end) per username ...
+  private pendingIps = new Map<string, number>();                      // ... and per IP; an entry is gone when none is left
   private swept = 0;
 
   // Blocked: a username with 5 or more failures, for 15 minutes from the latest one (the count survives the lock, so every
   // later failure locks again); an IP with 20 failures inside the last 15 minutes. When both apply the answer is the longer wait.
-  // Checking before a slow password check is not enough: a burst of parallel attempts all pass it before the first failure
-  // lands. A handler must call check() again after the await and refuse, even a right password, if it now blocks.
+  // A failure is recorded only after the slow password check, so a burst of parallel attempts would all pass a check() made before it,
+  // and every one would cost a hash. An attempt between begin() and end() therefore counts as a failure that is not recorded yet,
+  // which stops the burst at the limit. A handler must still call check() again after its password check, when its own attempt has
+  // ended, and refuse, even a right password, if the failures of the others now block.
   check(ip: string, username: string, now = Date.now()): { ok: true } | { ok: false; retryAfterMin: number } {
-    const u = this.users.get(key(username)), recent = this.recent(ip, now);
+    const k = key(username), u = this.users.get(k), recent = this.recent(ip, now);
+    const pendingUser = this.pendingUsers.get(k) ?? 0, pendingIp = this.pendingIps.get(ip) ?? 0;
+    // Such an attempt is the newest failure, so it is the last to leave the window: with only those, the wait is the whole window.
+    const userLast = pendingUser > 0 ? now : (u?.last ?? 0);
     const wait = Math.max(
-      u && u.fails >= USER_FAILS ? u.last + WINDOW - now : 0,
-      recent.length >= IP_FAILS ? recent[recent.length - IP_FAILS] + WINDOW - now : 0,
+      (u?.fails ?? 0) + pendingUser >= USER_FAILS ? userLast + WINDOW - now : 0,
+      recent.length + pendingIp >= IP_FAILS ? (recent[recent.length + pendingIp - IP_FAILS] ?? now) + WINDOW - now : 0,
     );
     return wait > 0 ? blocked(wait) : { ok: true };
+  }
+
+  // The password check of an attempt starts: from now until end() it counts in check(). Called right after a check() that passed, in the same turn.
+  begin(ip: string, username: string): void {
+    bump(this.pendingUsers, key(username), 1);
+    bump(this.pendingIps, ip, 1);
+  }
+
+  // It is over, whatever the outcome; the outcome is recorded after it, with fail() or succeed(), so that the check in between counts only the others.
+  end(ip: string, username: string): void {
+    bump(this.pendingUsers, key(username), -1);
+    bump(this.pendingIps, ip, -1);
   }
 
   fail(ip: string, username: string, now = Date.now()): void {

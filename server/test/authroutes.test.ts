@@ -14,7 +14,8 @@ import { runCli } from '../cli.ts';
 import { openDb } from '../db.ts';
 import type { DB } from '../db.ts';
 import { countUsers, createUser, findLogin, getMe, setPassword, setPrefs } from '../users.ts';
-import { startTestApp, tempDir, testConfig } from './helpers.ts';
+import { startTestApp, tempDir, testConfig, waitUntil } from './helpers.ts';
+import type { TestApp } from './helpers.ts';
 
 const USAGE = 'Usage: gallery set-password <username>';
 const TOO_MANY = /^Too many attempts, try again in \d+ minutes$/;
@@ -47,6 +48,27 @@ function landAfterHash(limiter: LoginLimiter, landing: () => void) {
   const check = limiter.check.bind(limiter);
   let calls = 0;
   limiter.check = (ip, username, now) => { if (++calls === 2) landing(); return check(ip, username, now); };
+}
+
+// `bodies` POSTed to `path`, each held back before its last byte until the server has received them all, so that they reach its first limiter check
+// together, as the requests of a script on another machine do. Sent one after another from this process they would trickle in: starting a hash holds the
+// event loop for some 20 ms, and by the time the rest are read the first results are back and have locked the address. Returns once they are let go.
+async function together(ta: TestApp, path: string, bodies: object[], headers: Record<string, string>) {
+  let arrived = 0;
+  const count = () => { arrived++; };
+  ta.app.server.on('request', count);
+  const gates: (() => void)[] = [];
+  const sent = bodies.map((body) => fetch(ta.url + path, {
+    method: 'POST', duplex: 'half', headers: { origin: ta.url, 'content-type': 'application/json', ...headers },
+    body: new ReadableStream({ start(c) { c.enqueue(Buffer.from(JSON.stringify(body))); gates.push(() => c.close()); } }),
+  } as RequestInit).then(async (r) => ({ status: r.status, body: await r.json() })));
+  const answers = Promise.all(sent);
+  answers.catch(() => {});   // a test that fails before it looks at them must not end in an unhandled rejection as well
+  await waitUntil(() => arrived === bodies.length, 5000);
+  ta.app.server.off('request', count);
+  assert.equal(arrived, bodies.length, 'the server did not receive them all');
+  for (const open of gates) open();
+  return { answers };
 }
 
 test('first-run setup', async (t) => {
@@ -218,6 +240,52 @@ test('login: a burst of parallel guesses is answered at most five times', async 
   const late = await guess('password123');
   assert.equal(late.status, 429); assert.match(late.body.error, TOO_MANY);              // the right password is no use once the name is locked
   assert.equal(sessionCount(ta.db), 0);
+});
+test('login: a burst of parallel guesses from one address costs at most 20 hashes, and a right password inside it is refused', async (t) => {
+  const ta = await startTestApp(); t.after(() => ta.close()); quiet(t);
+  await createUser(ta.db, { username: 'papa', displayName: 'Papa', password: 'password123', role: 'member' });
+  const hashes = countHashes(t);
+  const from = '203.0.113.50';
+  const login = async (username: string, password: string, ip = from) => {
+    const r = await ta.client().req('POST', '/api/login', { username, password, remember: false }, { 'x-forwarded-for': ip });
+    return { status: r.status, body: await r.json() };
+  };
+  let answers: { status: number; body: any }[] = [];
+  const cost = await hashes(async () => {
+    // a hundred different names, so that no name is locked and only the address can stop them
+    const guesses = Array.from({ length: 100 }, (_, i) => ({ username: 'guess' + i, password: 'bad-password', remember: false }));
+    const burst = await together(ta, '/api/login', guesses, { 'x-forwarded-for': from });
+    // The address has used up its twenty once they are hashing or have failed; either way they count, so the right password comes into a full house.
+    await waitUntil(() => !ta.app.limiter.check(from, 'papa').ok);
+    assert.equal(ta.app.limiter.check(from, 'papa').ok, false, 'the address was never used up');
+    const right = login('papa', 'password123');
+    answers = [...await burst.answers, await right];
+  });
+  const statuses = answers.map((a) => a.status);
+  assert.equal(statuses.filter((s) => s === 401).length, 20, String(statuses));
+  assert.equal(statuses.filter((s) => s === 429).length, 81, String(statuses));        // the other eighty guesses, and the right password
+  assert.match(answers[100].body.error, TOO_MANY);
+  assert.ok(cost <= 20, `${cost} hashes`);                                              // not a hash for each of the hundred
+  assert.equal(sessionCount(ta.db), 0);
+  assert.equal((await login('papa', 'password123')).status, 429);                      // the address stays shut ...
+  assert.equal((await login('papa', 'password123', '203.0.113.51')).status, 200);      // ... and no other address, nor papa, is touched by it
+});
+test('password change: a burst of parallel guesses is answered at most five times and costs at most five hashes', async (t) => {
+  const ta = await startTestApp(); t.after(() => ta.close()); quiet(t);
+  const { client: mama } = await ta.addUser('mama', 'member');
+  const hashes = countHashes(t);
+  const change = (current: string) => mama.json('POST', '/api/me/password', { current, next: 'newpassword1' });
+  let burst: { status: number }[] = [];
+  const cost = await hashes(async () => {
+    const guesses = Array.from({ length: 16 }, (_, i) => ({ current: 'wrong-guess-' + i, next: 'newpassword1' }));
+    burst = await (await together(ta, '/api/me/password', guesses, { cookie: mama.cookie! })).answers;
+  });
+  const statuses = burst.map((r) => r.status);
+  assert.equal(statuses.filter((s) => s === 400).length, 5, String(statuses));
+  assert.equal(statuses.filter((s) => s === 429).length, 11, String(statuses));
+  assert.ok(cost <= 5, `${cost} hashes`);
+  assert.equal((await change('password123')).status, 429);                             // the name is locked: the right password is no use
+  assert.equal(await verifyPassword('password123', findLogin(ta.db, 'mama')!.passwordHash), true);   // and it was not changed
 });
 test('login: the lock is per username and per address; a success clears the username', async (t) => {
   const ta = await startTestApp(); t.after(() => ta.close()); quiet(t);
