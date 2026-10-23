@@ -43,6 +43,7 @@ input[type=range] { accent-color: #005fb8; }
 .menu-item { width: 100%; height: 34px; display: flex; align-items: center; padding: 0 10px; border: none; border-radius: 5px; background: transparent; color: #1b1b1f; text-align: left; cursor: pointer; }
 .menu-item:hover { background: #eef1f5; }
 .search:focus-within { outline: 2px solid #005fb8; outline-offset: -1px; }   /* the box has no focus ring of its own: its input hides it */
+.dropping { outline: 2px dashed #005fb8; outline-offset: -6px; }   /* the items pane while files are dragged over it (Uploads.tsx adds the class) */
 
 /* The folder tree: a row is a treeitem. The blue bar and the bold, tinted look belong to the open folder (aria-selected). */
 .tree-row { position: relative; height: 30px; flex-shrink: 0; display: flex; align-items: center; gap: 6px; padding-right: 8px; border-radius: 5px; cursor: pointer; }
