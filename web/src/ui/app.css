@@ -1,0 +1,38 @@
+/* What a stylesheet has to say: the design's base look and keyframes (docs/design/Gallery Explorer.dc.html, lines 10-23), focus rings, the states inline
+   styles can't have (hover, backdrop) and the phone rules. The rest of the look is inline in the components, as in the design. */
+
+html, body { margin: 0; height: 100%; background: #eef1f5; }
+#root { height: 100%; }
+* { box-sizing: border-box; }
+body { font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 13px; color: #1b1b1f; }
+button, input, select, textarea { font: inherit; }
+a { color: #005fb8; text-decoration: none; }
+a:hover { color: #004a91; text-decoration: underline; }
+input[type=range] { accent-color: #005fb8; }
+:focus-visible { outline: 2px solid #005fb8; outline-offset: 2px; }
+
+@keyframes ssFade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes ssSlide { from { opacity: 0; transform: translateX(60px) } to { opacity: 1; transform: none } }
+@keyframes ssProg { from { width: 0 } to { width: 100% } }
+@keyframes popIn { from { opacity: 0; transform: translateY(8px) scale(.98) } to { opacity: 1; transform: none } }
+
+/* Button (controls.tsx) */
+.btn { height: 32px; padding: 0 18px; border: 1px solid #d5d9e0; border-radius: 6px; background: #fff; color: #1b1b1f; cursor: pointer; white-space: nowrap; }
+.btn:hover:enabled { background: #f7f8fa; }
+.btn.primary { border: none; background: #005fb8; color: #fff; font-weight: 600; }
+.btn.primary:hover:enabled { background: #0a6ccc; }
+.btn:disabled { opacity: .4; cursor: default; }
+
+/* Field (controls.tsx) */
+.field { height: 32px; border: 1px solid #d5d9e0; border-bottom-color: #8a8f99; border-radius: 5px; padding: 0 10px; background: #fbfbfc; color: #1b1b1f; }
+
+/* Dialog (controls.tsx): a modal <dialog> brings the focus trap, Esc and the inert page behind it */
+.dlg { padding: 0; border: none; border-radius: 10px; background: #fbfbfc; color: #1b1b1f; overflow: hidden; max-width: calc(100% - 32px); max-height: calc(100% - 32px);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .28), 0 0 0 1px rgba(0, 0, 0, .06); animation: popIn .18s ease-out; }
+.dlg::backdrop { background: rgba(20, 24, 32, .32); }
+
+@media (max-width: 699px) {
+  /* iOS Safari zooms the page into a field whose text is smaller than 16px; the design's inline `font: inherit` has to give way */
+  input, textarea, select { font-size: 16px !important; }
+  .btn, .field { height: 40px; }
+}

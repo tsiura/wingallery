@@ -13,6 +13,7 @@ import type { Ctx } from './http.ts';
 import { log } from './log.ts';
 import { registerMediaRoutes } from './mediaroutes.ts';
 import { photoPool } from './meta.ts';
+import { serveWeb } from './static.ts';
 import { createThumbnailer } from './thumbs.ts';
 import type { Thumbnailer } from './thumbs.ts';
 import { countUsers } from './users.ts';
@@ -68,7 +69,10 @@ export function createApp(cfg: Config, db: DB): App {
       }
 
       const found = router.match(req.method ?? 'GET', url.pathname);
-      if (found === null) throw new HttpError(404, 'Not found');
+      if (found === null) {
+        await serveWeb(ctx, cfg);   // the web app's page and files; it answers 404 for whatever isn't a read outside /api and /media
+        return;
+      }
       if (found === 'method') throw new HttpError(405, 'Method not allowed');
       ctx.params = found.params;
       const out = await found.handler(ctx);

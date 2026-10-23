@@ -6,7 +6,11 @@
     "test": "node --disable-warning=ExperimentalWarning --test",
     "typecheck": "tsc --noEmit",
     "start": "node --disable-warning=ExperimentalWarning server/main.ts",
-    "test:docker": "docker build --target test -t home-gallery-test . && docker run --rm -u \"$(id -u):$(id -g)\" -v \"$PWD:/app\" -w /app home-gallery-test node --disable-warning=ExperimentalWarning --test"
+    "test:docker": "docker build --target test -t home-gallery-test . && docker run --rm -u \"$(id -u):$(id -g)\" -v \"$PWD:/app\" -w /app home-gallery-test node --disable-warning=ExperimentalWarning --test",
+    "dev:server": "MEDIA_ROOT=dev-data/media DATA_DIR=dev-data/data COOKIE_SECURE=false node --watch --disable-warning=ExperimentalWarning server/main.ts",
+    "dev:web": "vite",
+    "build": "vite build",
+    "seed": "sh scripts/seed-dev.sh"
   },
   "keywords": [],
   "author": "",
