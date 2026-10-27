@@ -70,6 +70,10 @@ export function playAction(viewer: boolean, film: boolean, showPlaying: boolean,
   return { show: true, clip: showPlaying ? 'pause' : 'play' };
 }
 
+// Whether Play first opens the window that asks for the slide time and the effect: in the viewer, when Play would start the show (`show`, from playAction) and the
+// show isn't playing yet, the first time in that viewer (`chosen`: asked already). A slideshow was set up in its own window and plays at once.
+export const asksFirst = (viewer: boolean, show: boolean, playing: boolean, chosen: boolean): boolean => viewer && show && !playing && !chosen;
+
 // Whether the button shows "playing" (is a Pause button): in the viewer a film's own state, since the film is what the button is for there; otherwise the show's.
 export const isPlaying = (viewer: boolean, film: boolean, showPlaying: boolean, filmPlaying: boolean): boolean => (viewer && film ? filmPlaying : showPlaying);
 

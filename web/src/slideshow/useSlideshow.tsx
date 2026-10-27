@@ -71,14 +71,15 @@ export function useSlideshow({ me, vpath, listing, sorted, shown, picked }: {
     if (at >= 0) setPhase({ kind: 'play', items, start: at, autoplay: false });
   }
 
+  const onCfg = (p: Partial<ShowConfig>) => setPatch((prev) => ({ ...prev, ...p }));
   let ui: ReactNode = null;
   if (phase?.kind === 'ask') {
     ui = (
-      <SlideshowModal folderName={listing?.name ?? ''} selectedCount={picked.length} cfg={cfg} onCfg={(p) => setPatch((prev) => ({ ...prev, ...p }))} onStart={start} onClose={close}
+      <SlideshowModal folderName={listing?.name ?? ''} selectedCount={picked.length} cfg={cfg} onCfg={onCfg} onStart={start} onClose={close}
         poolCount={failed !== undefined ? 0 : pool ? filterPool(pool.items, cfg.videos).length : null} note={pool?.capped ? CAPPED_NOTE : undefined} error={failed} />
     );
   } else if (phase?.kind === 'play') {
-    ui = <Player items={phase.items} start={phase.start} autoplay={phase.autoplay} cfg={cfg} onClose={close} />;
+    ui = <Player items={phase.items} start={phase.start} autoplay={phase.autoplay} cfg={cfg} onCfg={onCfg} onClose={close} />;
   }
   return { ui, active: phase !== null, configure, view, close };
 }

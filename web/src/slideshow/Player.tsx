@@ -5,12 +5,13 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode, SyntheticEvent, TouchEvent } from 'react';
 import type { Meta } from '../../../shared/types.ts';
 import { api, q, saveFile, viewUrl } from '../api.ts';
-import { advance, advancesAfterFilm, isPlaying, metaLine, playAction, refusedAutoplay, swipeDelta, toggled } from '../lib/slideshow.ts';
+import { advance, advancesAfterFilm, asksFirst, isPlaying, metaLine, playAction, refusedAutoplay, swipeDelta, toggled } from '../lib/slideshow.ts';
 import type { PlayItem, Run, ShowConfig } from '../lib/slideshow.ts';
 import { Button, Dialog } from '../ui/controls.tsx';
 import { useNarrow } from '../ui/hooks.ts';
 import { Icon } from '../ui/Icon.tsx';
 import type { IconName } from '../ui/Icon.tsx';
+import { PlayModal } from './SlideshowModal.tsx';
 
 const ANIMATIONS = { fade: 'ssFade .6s ease', slide: 'ssSlide .45s cubic-bezier(.2,.7,.2,1)', none: 'none' } as const;   // design line 711
 const FULL: CSSProperties = { width: '100%', height: '100%', maxWidth: 'none', maxHeight: 'none', margin: 0, borderRadius: 0, background: '#0b0c0e', color: '#fff', boxShadow: 'none', animation: 'none' };
@@ -36,10 +37,12 @@ function Unshowable({ message, onDownload }: { message: string; onDownload(): vo
 // `items` are shown from `items[start]`. With `autoplay` it is a slideshow: it goes on by itself (a photo after `cfg.seconds`, a film when it ends) and Play and Pause (the
 // button, Space) act on the show and on the film with it. Without, it is the viewer, for a file that was opened: nothing goes on by itself, but a film does play by itself
 // when it is shown, and has the button and Space to itself (the button shows whether it plays, and when it ends the viewer stays on it); on a photo Play arms the advance to
-// the next one and Pause disarms it. The keys are ← → (step), Space (play or pause) and Esc (close); on a touch screen a swipe steps. A photo is a plain <img> from /media/view
+// the next one and Pause disarms it, and the first Play asks for the slide time and the effect (`onCfg` keeps them). The keys are ← → (step), Space (play or pause) and Esc (close); on a touch screen a swipe steps. A photo is a plain <img> from /media/view
 // (a HEIC is served as a JPEG there) and a film a <video controls>; the browser that cannot show one says so, and the Download button is in the bar always (F14.2).
 // A slide that comes with its `meta` (when it was taken, how big) has no need to ask the server for it.
-export function Player({ items, start, autoplay, cfg, onClose }: { items: PlayItem[]; start: number; autoplay: boolean; cfg: ShowConfig; onClose(): void }) {
+export function Player({ items, start, autoplay, cfg, onCfg, onClose }: {
+  items: PlayItem[]; start: number; autoplay: boolean; cfg: ShowConfig; onCfg(patch: Partial<ShowConfig>): void; onClose(): void;
+}) {
   const phone = useNarrow();
   const viewer = !autoplay;
   const len = items.length;
@@ -54,6 +57,8 @@ export function Player({ items, start, autoplay, cfg, onClose }: { items: PlayIt
   const [played, setPlayed] = useState({ lap: 0, fraction: 0 });     // how far the film of this lap has played
   const [clipState, setClipState] = useState({ lap: 0, playing: false });   // whether the film of this lap plays, as its own events said last
   const [fullscreen, setFullscreen] = useState(() => document.fullscreenElement !== null);
+  const [asking, setAsking] = useState(false);                       // the Play window is open
+  const [chosen, setChosen] = useState(false);                       // it was answered in this viewer: Play just plays
   const asked = useRef(new Set<string>());                            // the paths that /api/meta has been asked about
   const clip = useRef<HTMLVideoElement>(null);
   const root = useRef<HTMLDivElement>(null);
@@ -113,14 +118,16 @@ export function Player({ items, start, autoplay, cfg, onClose }: { items: PlayIt
   function togglePlay(): void {
     const video = clip.current;
     const act = playAction(viewer, live, s.playing, video !== null && !video.paused);
+    if (asksFirst(viewer, act.show, s.playing, chosen)) return setAsking(true);
     if (act.show) dispatch({ kind: 'toggle' });
     if (video && act.clip === 'play') video.play().catch(() => {});
     else if (video && act.clip === 'pause') video.pause();
   }
 
   // Window level, because the focus can be anywhere in the window: on the stage, on a button, on the film. A film that has the focus keeps Space for itself.
-  // Firefox presses a focused button when the key comes up, which a prevented key down does not stop.
+  // Firefox presses a focused button when the key comes up, which a prevented key down does not stop. While the Play window is open the keys are its own.
   useEffect(() => {
+    if (asking) return;
     const space = (e: KeyboardEvent) => e.key === ' ' && !(e.target instanceof HTMLVideoElement);
     const down = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;   // Alt+Left is the browser's Back
@@ -131,7 +138,7 @@ export function Player({ items, start, autoplay, cfg, onClose }: { items: PlayIt
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
-  }, [s.playing, live]);
+  }, [s.playing, live, asking, chosen]);
 
   useEffect(() => {
     const changed = () => setFullscreen(document.fullscreenElement !== null);
@@ -221,6 +228,10 @@ export function Player({ items, start, autoplay, cfg, onClose }: { items: PlayIt
             }} />
         </div>
       </div>
+      {asking && (
+        <PlayModal cfg={cfg} onCfg={onCfg} onClose={() => setAsking(false)}
+          onStart={() => { setAsking(false); setChosen(true); dispatch({ kind: 'toggle' }); }} />
+      )}
     </Dialog>
   );
 }

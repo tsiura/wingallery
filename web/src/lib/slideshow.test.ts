@@ -3,9 +3,17 @@ import { test } from 'node:test';
 import type { Entry, Meta, SlideItem } from '../../../shared/types.ts';
 import type { PlayItem } from './slideshow.ts';
 import {
-  advance, advancesAfterFilm, CAPPED_NOTE, defaultScope, filterPool, isPlaying, joinPool, metaLine, playAction, poolSources, refusedAutoplay, shuffled, SLIDE_CAP, slidesOf, step,
-  swipeDelta, toggled,
+  advance, advancesAfterFilm, asksFirst, CAPPED_NOTE, defaultScope, filterPool, isPlaying, joinPool, metaLine, playAction, poolSources, refusedAutoplay, shuffled, SLIDE_CAP,
+  slidesOf, step, swipeDelta, toggled,
 } from './slideshow.ts';
+
+test('asksFirst: Play in the viewer asks for the slide time and the effect before the show starts, once per viewer; Pause, a film and a slideshow never ask', () => {
+  assert.equal(asksFirst(true, true, false, false), true);     // a photo in the viewer, nothing playing yet
+  assert.equal(asksFirst(true, true, false, true), false);     // asked already in this viewer: Play just resumes
+  assert.equal(asksFirst(true, true, true, false), false);     // playing: the button is Pause
+  assert.equal(asksFirst(true, false, false, false), false);   // a film's own Play
+  assert.equal(asksFirst(false, true, false, false), false);   // a slideshow was set up in its own window
+});
 
 test('slideshow helpers', () => {
   assert.equal(defaultScope(2), 'selected'); assert.equal(defaultScope(1), 'folder');

@@ -8,7 +8,37 @@ const TRANSITIONS: [ShowConfig['transition'], string][] = [['fade', 'Fade'], ['s
 const TOGGLES: [key: 'shuffle' | 'loop' | 'videos' | 'subfolders', label: string][] = [
   ['shuffle', 'Shuffle'], ['loop', 'Loop'], ['videos', 'Include videos'], ['subfolders', 'Include subfolders'],
 ];
+const EFFECTS: [ShowConfig['transition'], string][] = [['fade', 'Fade'], ['none', 'No effect']];   // the viewer's Play window; more effects later
 const section = { display: 'flex', flexDirection: 'column', gap: 8 } as const;
+
+// The slide time: 2 to 20 seconds, the number beside its name.
+function SlideTime({ seconds, onCfg }: { seconds: number; onCfg(patch: Partial<ShowConfig>): void }) {
+  return (
+    <div style={section}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <span style={{ fontWeight: 600 }}>Slide time</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums', color: '#005fb8', fontWeight: 600 }}>{seconds} seconds</span>
+      </div>
+      <input type="range" min={2} max={20} step={1} value={seconds} aria-label="Slide time" onChange={(e) => onCfg({ seconds: Number(e.target.value) })} style={{ width: '100%' }} />
+    </div>
+  );
+}
+
+// The window that Play in the viewer opens before the show starts: the slide time and the effect, nothing about what to play (that is the folder, from the file shown).
+export function PlayModal({ cfg, onCfg, onStart, onClose }: { cfg: ShowConfig; onCfg(patch: Partial<ShowConfig>): void; onStart(): void; onClose(): void }) {
+  return (
+    <Dialog label="Play slideshow" width={360} onClose={onClose}>
+      <Frame title="Play slideshow" gap={18} onSubmit={onStart}
+        footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" type="submit">Start</Button></>}>
+        <SlideTime seconds={cfg.seconds} onCfg={onCfg} />
+        <div style={section}>
+          <span style={{ fontWeight: 600 }}>Effect</span>
+          <Seg fill plain value={cfg.transition} onChange={(transition) => onCfg({ transition })} options={EFFECTS} />
+        </div>
+      </Frame>
+    </Dialog>
+  );
+}
 
 // `poolCount` is how many items the options as they are now would play (null while that is being counted: a recursive list is read from the server), and with 0 there
 // is nothing to start. `note` is a line under it (a list that was cut short), `error` what went wrong in getting the list. Play (the scope) is offered only when
@@ -23,13 +53,7 @@ export function SlideshowModal({ folderName, poolCount, selectedCount, cfg, onCf
       <Frame title="Start slideshow" gap={18} onSubmit={() => { if (poolCount) onStart(); }}
         sub={<>{folderName} · {items}{note && <div style={{ fontSize: 12, marginTop: 2 }}>{note}</div>}</>}
         footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" type="submit" disabled={!poolCount}>Start</Button></>}>
-        <div style={section}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-            <span style={{ fontWeight: 600 }}>Slide time</span>
-            <span style={{ fontVariantNumeric: 'tabular-nums', color: '#005fb8', fontWeight: 600 }}>{cfg.seconds} seconds</span>
-          </div>
-          <input type="range" min={2} max={20} step={1} value={cfg.seconds} aria-label="Slide time" onChange={(e) => onCfg({ seconds: Number(e.target.value) })} style={{ width: '100%' }} />
-        </div>
+        <SlideTime seconds={cfg.seconds} onCfg={onCfg} />
         {selectedCount > 0 && (
           <div style={section}>
             <span style={{ fontWeight: 600 }}>Play</span>
