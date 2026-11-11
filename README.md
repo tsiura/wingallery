@@ -4,7 +4,7 @@ A self-hosted photo and video gallery that looks and behaves like Windows 11 Fil
 
 ## Requirements
 
-- Docker Engine 20.10.10 or newer with the Compose v2 plugin (`docker compose`). Older 20.10 releases cannot run the image: their default seccomp profile blocks `clone3`, which the glibc of the Debian 13 base image uses. The image is built on the machine that runs it, on amd64 or arm64, by hand or by [Deploy from Gitea](#deploy-from-gitea); there is no public registry to pull from.
+- Docker Engine 20.10.10 or newer with the Compose v2 plugin (`docker compose`). Older 20.10 releases cannot run the image: their default seccomp profile blocks `clone3`, which the glibc of the Debian 13 base image uses. The image is built on the machine that runs it, on amd64 or arm64, or pulled from Docker Hub on an amd64 machine, see [QNAP with Container Station](#qnap-with-container-station).
 - Synology Container Manager should work, but this has not been tried yet. It needs the Compose plugin, and you may have to put `sudo` in front of the `docker` commands below.
 - Traefik (v3 assumed) that is already running, with a domain pointing at it, an HTTPS entrypoint and a certificate resolver. TLS ends at Traefik; the gallery speaks plain HTTP inside the container.
 - The folders you want to share, on the disks of the machine that runs the container.
@@ -147,82 +147,46 @@ entryPoints:
         allowEncodedSemicolon: true
 ```
 
-## Deploy from Gitea
+## QNAP with Container Station
 
-Instead of building by hand, a Gitea runner on the NAS can test, build and start the gallery on every push to `main` (`.gitea/workflows/deploy.yaml`). The NAS's own Docker builds the image, pushes it to the repository's container registry in Gitea (tagged with the commit id and `latest`) and starts it from a `compose.yaml` that lives only on the NAS. The steps are for a QNAP with Container Station and Traefik on another machine; elsewhere, change `APP_DIR` at the top of the workflow.
+Every push to `main` makes GitHub Actions (`.github/workflows/docker.yaml`) run the typecheck and the tests in the image, then build it and push it to Docker Hub as `<user>/wingallery`, tagged `latest` and with the short commit id. Container Station on a QNAP runs it from there, with no SSH and no command line. The image is built for amd64, so this fits a QNAP with an Intel or AMD CPU. It holds only the app: no users, passwords or photos.
 
-**The runner controls the NAS's Docker, and whoever controls Docker controls the NAS.** Anyone who can change a workflow file in a repository this runner serves runs commands as root on the NAS. Register the runner for this one repository (not for a user, an organization or the whole instance), keep the repository private, and give nobody else write access to it.
+For your own copy of the repository, GitHub needs an environment named `DOCKERHUB` (Settings → Environments) with `DOCKERHUB_USERNAME`, as a variable or a secret, and the secret `DOCKERHUB_TOKEN`, a Docker Hub access token (Account settings → Personal access tokens) with Read & Write. Docker Hub creates the `wingallery` repository at the first push.
 
-1. On the NAS: install Container Station, turn on SSH (Control Panel → Network & File Services → Telnet/SSH), and create a user for the gallery, not an administrator, with read/write access to the shared folders it will show. Sign in with `ssh admin@<nas-ip>` (in QTS's console menu, `Q` then `Y` gives a shell) and check:
-
-   ```sh
-   docker version               # 20.10.10 or newer
-   ls -l /var/run/docker.sock   # the runner and the workflow expect Docker's socket here
-   id gallery                   # CHANGE: the user you created; gives <uid> and <gid>
-   ```
-
-2. Create the gallery's folder and its `data/`, closed to everyone else because the database holds password hashes:
-
-   ```sh
-   mkdir -p /share/Container/home-gallery/data
-   chown <uid>:<gid> /share/Container/home-gallery/data && chmod 700 /share/Container/home-gallery/data
-   ```
-
-   Put this `compose.yaml` in `/share/Container/home-gallery`:
+1. In Container Station: Applications → Create → Create Application. Name it `home-gallery`, paste this, Validate YAML, then Create:
 
    ```yaml
    services:
      gallery:
-       image: git.example.com/owner/wingallery:${TAG:-latest}   # CHANGE: <Gitea host>/<owner>/<repository>, in lowercase
+       image: <user>/wingallery:latest    # CHANGE: your Docker Hub user
+       pull_policy: always                # Recreate then fetches the newest image instead of reusing the stored one
        restart: unless-stopped
-       user: "<uid>:<gid>"                # CHANGE
        ports: ["<nas-ip>:8099:8080"]      # CHANGE: the NAS's LAN IP. Not port 8080 on the NAS: QTS's own web interface has it.
        environment:
          TZ: Europe/Berlin                # CHANGE
-         TRUSTED_PROXIES: <traefik-ip>    # CHANGE
+         TRUSTED_PROXIES: <traefik-ip>    # CHANGE: the machine Traefik runs on
        volumes:
-         - ./data:/data
-         - /share/CACHEDEV1_DATA/Multimedia/Photos:/media/Photos   # CHANGE: one line per folder, see Adding folders
+         - data:/data
+         - /share/Multimedia/Photos:/media/Photos   # CHANGE: one line per shared folder, see Adding folders
        logging:
          driver: json-file
          options:
            max-size: 10m
            max-file: "5"
+   volumes:
+     data:
    ```
 
-   `readlink -f /share/<shared folder>` prints a shared folder's real path. Route Traefik to `http://<nas-ip>:8099` as in [Traefik on another machine](#traefik-on-another-machine).
+2. Route Traefik to `http://<nas-ip>:8099` as in [Traefik on another machine](#traefik-on-another-machine).
 
-3. In Gitea:
-   - In the repository, Settings → Actions must be on.
-   - Under your user's Settings → Applications, create a token with only the `write:package` permission. Add it to the repository under Settings → Actions → Secrets as `REGISTRY_TOKEN`. (The job's own token cannot push images.)
-   - Copy the registration token from the repository's Settings → Actions → Runners.
+3. Create the administrator: in Containers, open the gallery's container, then its log, and find the line with `setup?token=`. Go on as in [Setup](#setup) from step 6.
 
-4. Start the runner on the NAS, with this `compose.yaml` in a folder of its own, for example `/share/Container/gitea-runner`, and `docker compose up -d` there:
+In this setup:
 
-   ```yaml
-   services:
-     runner:
-       image: gitea/runner:latest
-       restart: unless-stopped
-       volumes:
-         - ./data:/data
-         - /var/run/docker.sock:/var/run/docker.sock
-       environment:
-         GITEA_INSTANCE_URL: https://git.example.com   # CHANGE
-         GITEA_RUNNER_REGISTRATION_TOKEN: <token>      # CHANGE; needed only for the first start
-         GITEA_RUNNER_NAME: nas
-         GITEA_RUNNER_LABELS: nas:docker://docker.gitea.com/runner-images:ubuntu-latest
-   ```
-
-   Once the runner is listed under the repository's Settings → Actions → Runners, delete the token line (the runner keeps its registration in `./data`) and run `docker compose up -d` again.
-
-5. Push to `main`, or use Run workflow on the repository's Actions tab. The first run takes several minutes. Then create the administrator: `cd /share/Container/home-gallery && docker compose logs gallery | grep 'setup?token'`, and go on as in [Setup](#setup) from step 6.
-
-From then on, every push to `main` deploys, after the typecheck and the tests pass in the image. In this setup:
-
-- **Roll back** with `cd /share/Container/home-gallery && TAG=<older commit id> docker compose up -d`; the next push deploys `latest` again. Every deployed commit stays on the NAS as an image and in Gitea's registry. `docker image prune -a` removes the images no container uses, old rollback points included.
-- **Security updates of the image**, about once a month: `docker builder prune -af` on the NAS, then Run workflow. Without the cleared build cache, the layers with ffmpeg, libvips and the other libraries that open uploaded files would never get Debian's security fixes.
-- **Password reset and the log** work as described below, from `/share/Container/home-gallery`.
+- **The database is in the Docker volume `data`** (Container Station names it after the application), not in a shared folder, so the NAS needs no folder prepared for it. The gallery runs as the image's user `node`, user id 1000. For uploads, renames, moves and deletes, that id needs write access to the shared folders; when it lacks it, the gallery says "This folder is read-only on disk". Files the gallery creates belong to user id 1000 on the NAS.
+- **Update** after a push: Applications → `home-gallery` → Recreate → Update. Every push also rebuilds the image from scratch, with Debian's current security fixes. Without pushes, use Run workflow on the repository's Actions tab on GitHub about once a month, then Recreate.
+- **Roll back** by replacing `latest` with an older short commit id in the YAML (Recreate shows it), then Update.
+- **Backup** of the users and shares (see [Backup](#backup)) needs a shell, because the volume is not in a shared folder.
 
 ## One gallery per machine
 

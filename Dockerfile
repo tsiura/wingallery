@@ -10,7 +10,7 @@ FROM base AS test
 RUN apt-get update && apt-get install -y --no-install-recommends libheif-examples libheif-plugin-x265 \
  && rm -rf /var/lib/apt/lists/*
 
-# The deploy workflow builds this first: typecheck and tests inside the image, as the node user, because some tests take rights away from a folder
+# The image workflow builds this first: typecheck and tests inside the image, as the node user, because some tests take rights away from a folder
 # and root would ignore that.
 FROM test AS check
 RUN chown node:node /app
@@ -34,7 +34,8 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/shared ./shared
 COPY --from=build /app/web/dist ./web/dist
 COPY docker/gallery /usr/local/bin/gallery
-RUN chmod 755 /usr/local/bin/gallery
+# /data owned by node: a new Docker volume mounted there takes this owner, so the gallery can write it without a chown on the host.
+RUN chmod 755 /usr/local/bin/gallery && mkdir /data && chown node:node /data
 USER node
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
