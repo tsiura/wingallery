@@ -1,0 +1,44 @@
+# Tests, builds and deploys the gallery on every push to main (README: Deploy from Gitea). It runs on a runner on the NAS itself, label `nas`,
+# whose jobs use the NAS's own Docker: the image is built there for the NAS's CPU, pushed to this Gitea's registry for history and rollback,
+# and started from the compose file in APP_DIR, which stays on the NAS because it holds that machine's paths, user ids and addresses.
+name: deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  APP_DIR: /share/Container/home-gallery   # the folder on the NAS with compose.yaml and data/
+
+jobs:
+  deploy:
+    runs-on: nas
+    defaults:
+      run:
+        shell: bash   # ${GITHUB_REPOSITORY,,} below is bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: docker build --pull --target check .   # --pull: a rebuilt base image (Debian security fixes) is used, not an old local copy
+
+      - name: Build
+        run: |
+          IMAGE="${GITHUB_SERVER_URL#*://}/${GITHUB_REPOSITORY,,}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .
+
+      - name: Push
+        env:
+          TOKEN: ${{ secrets.REGISTRY_TOKEN }}   # a token with write:package only: the job's own token can't push images
+        run: |
+          printf '%s' "$TOKEN" | docker login "${IMAGE%%/*}" -u "$GITHUB_REPOSITORY_OWNER" --password-stdin
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:latest"
+
+      # compose.yaml is on the NAS, not in this job's container, so compose runs in a container of its own that sees APP_DIR at the same path
+      # (relative paths in it then mean the same folder to compose and to the NAS's Docker). --wait fails the job if the gallery isn't healthy.
+      - name: Deploy
+        run: >
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$APP_DIR:$APP_DIR" -w "$APP_DIR" -e TAG="$GITHUB_SHA"
+          docker:cli docker compose up -d --wait

@@ -10,6 +10,16 @@ FROM base AS test
 RUN apt-get update && apt-get install -y --no-install-recommends libheif-examples libheif-plugin-x265 \
  && rm -rf /var/lib/apt/lists/*
 
+# The deploy workflow builds this first: typecheck and tests inside the image, as the node user, because some tests take rights away from a folder
+# and root would ignore that.
+FROM test AS check
+RUN chown node:node /app
+USER node
+COPY --chown=node:node package.json package-lock.json ./
+RUN npm ci
+COPY --chown=node:node . .
+RUN npm run typecheck && npm test
+
 FROM base AS build
 COPY package.json package-lock.json ./
 RUN npm ci
